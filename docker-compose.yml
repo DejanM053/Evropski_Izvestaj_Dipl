@@ -1,0 +1,27 @@
+services:
+  mongo:
+    image: mongo:7
+    volumes:
+      - mongo-data:/data/db
+    ports:
+      - "27017:27017"
+
+  hardhat:
+    build:
+      context: ./blockchain
+    ports:
+      - "8545:8545"
+
+  backend:
+    build:
+      context: ./backend
+    env_file:
+      - .env
+    ports:
+      - "3000:3000"
+    depends_on:
+      - mongo
+      - hardhat
+
+volumes:
+  mongo-data:
