@@ -1,0 +1,5 @@
+---
+paths: ["backend/**"]
+---
+
+# Backend rules
