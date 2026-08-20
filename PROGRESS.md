@@ -2,14 +2,14 @@
 
 ## Current phase
 
-Phase 2 — Docker Compose + backend skeleton + `/api/health`
+Phase 3 — Session + report CRUD + Socket.IO sync
 
 ## Phases (from master_plan.md §8)
 
 - [x] Phase 0 — Repository restructure (mobile/backend/blockchain split, root config)
 - [x] Phase 1 — Contract + Hardhat tests
 - [x] Phase 2 — Docker Compose + backend skeleton + `/api/health`
-- [ ] Phase 3 — Session + report CRUD + Socket.IO sync
+- [x] Phase 3 — Session + report CRUD + Socket.IO sync
 - [ ] Phase 4 — GridFS uploads + hashing
 - [ ] Phase 5 — Design system → Flutter theme + widgets
 - [ ] Phase 6 — Screens 1–4 (session pairing)
@@ -48,7 +48,34 @@ Phase 2 — Docker Compose + backend skeleton + `/api/health`
   service still rebuilds/recreates its `depends_on` services too, which
   would reset the Hardhat node's in-memory chain and un-deploy the
   contract. Documented `up -d backend` without `--build` in the README.
+- `Session.sessionCode` has no hard unique DB index. §5.3 asks for
+  uniqueness "among non-expired sessions," and Mongo's TTL reaper runs on a
+  ~60s cycle, so a hard unique index would occasionally block reusing a code
+  from a session that's logically expired but not yet physically deleted.
+  Uniqueness is instead enforced at generation time: check-for-collision
+  against non-expired sessions, retry up to 10 times. Non-unique index kept
+  for lookup performance.
+- Split `src/index.js` into `src/app.js` (pure factory: builds the Express +
+  Socket.IO app, no `.listen()`/Mongo connect) and a thin `src/index.js`
+  entrypoint, purely so integration tests can `createApp()` and drive it
+  with supertest/socket.io-client without a real process boot.
+- Integration tests (`backend/test/`) run against the real dockerized Mongo
+  on `localhost:27017` (db `accident-report-test`), not
+  `mongodb-memory-server` — reuses infra already verified working in Phase
+  2 instead of adding a new dependency that needs a binary download.
+  **Requires `docker compose up -d mongo` (or any local mongod on 27017)
+  before `npm test`.**
+- `party:ready` only persists the per-party `ready` flag and rebroadcasts
+  `party:status`; it does **not** auto-advance `Session.status` past
+  `"joined"`. §5.3 doesn't specify the exact trigger for
+  filling→review→signing→finalizing→sealed, and those transitions depend on
+  routes this phase explicitly excludes (review confirmation, signatures,
+  finalize) — deferred rather than guessed. See `.claude/rules/backend.md`
+  for the full socket contract and other scope gaps (status/report status
+  not synced, `?deviceId=` filter is a no-op).
 
 ## Known issues
 
-(none yet)
+- `GET /api/reports?deviceId=` doesn't filter — no `deviceId` field exists
+  anywhere in §5.1's schemas yet. Needs a schema decision before the mobile
+  client's local-deviceId history scoping (§6 client rules) can work.
