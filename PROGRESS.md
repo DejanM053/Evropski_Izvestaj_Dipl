@@ -2,7 +2,7 @@
 
 ## Current phase
 
-Phase 3 — Session + report CRUD + Socket.IO sync
+Phase 5 — Design system → Flutter theme + widgets
 
 ## Phases (from master_plan.md §8)
 
@@ -10,7 +10,7 @@ Phase 3 — Session + report CRUD + Socket.IO sync
 - [x] Phase 1 — Contract + Hardhat tests
 - [x] Phase 2 — Docker Compose + backend skeleton + `/api/health`
 - [x] Phase 3 — Session + report CRUD + Socket.IO sync
-- [ ] Phase 4 — GridFS uploads + hashing
+- [x] Phase 4 — GridFS uploads + hashing
 - [ ] Phase 5 — Design system → Flutter theme + widgets
 - [ ] Phase 6 — Screens 1–4 (session pairing)
 - [ ] Phase 7 — Screens 5–9 (form, circumstances, sketch, photos)
@@ -73,6 +73,49 @@ Phase 3 — Session + report CRUD + Socket.IO sync
   finalize) — deferred rather than guessed. See `.claude/rules/backend.md`
   for the full socket contract and other scope gaps (status/report status
   not synced, `?deviceId=` filter is a no-op).
+- GridFS attachments live in a single bucket named `attachments`
+  (`attachments.files`/`attachments.chunks`), wrapped by
+  `storage.service.js`. The bucket is built lazily per call from
+  `mongoose.connection.db` rather than once at module load, since
+  `storage.service.js` is required before `index.js`'s async Mongo connect
+  resolves.
+- `hash.service.computeBundleHash` sorts attachment sha256 hex strings
+  lexicographically (not by fileId, kind, or insertion order) before
+  concatenating and re-hashing — the only input to the sort is the hash
+  values themselves, so verify (§5.5, Phase 11) can reproduce the same
+  bundleHash from a freshly-recomputed attachment list without needing to
+  reconstruct the original upload order. Documented in a comment in
+  `hash.service.js`.
+- Sketch and signature uploads are treated as single-slot-per-report (sketch)
+  or single-slot-per-party (signature): re-uploading replaces the prior
+  `attachmentHashes` entry (matched by the previous `fileId`, since
+  `AttachmentHashSchema` has no `party` field) and best-effort deletes the
+  orphaned GridFS blob via `storage.service.deleteFile`. Photos are additive
+  — no replace logic, every upload is a new entry. Not tested by finalize
+  yet (Phase 9/10 hasn't landed), but keeps `attachmentHashes` from
+  accumulating stale entries if a party redoes their sketch or signature
+  before finalizing.
+- `report-guard.service.js`'s `requireUnsealedReport` didn't validate
+  `req.params.id` as an ObjectId before (unused until this phase). Added an
+  `isValid` check ahead of `findById` so a malformed id 404s like every
+  other route, instead of throwing a Mongoose `CastError` into the generic
+  500 handler.
+- Upload validation (image/png + image/jpeg only, 10MB cap) lives entirely
+  in `routes/uploads.js` via a `multer.memoryStorage()` instance wrapped in
+  a custom `uploadSingle()` — multer's callback-style error (fileFilter
+  rejection, `LIMIT_FILE_SIZE`) is caught there and turned into a 415/413
+  directly, rather than relying on Express's error-middleware layer
+  ordering, which is easy to get wrong when regular and error middleware
+  are interleaved in one route's middleware array.
+- Verified manually against the running Docker stack (not just Jest): `curl`
+  multipart upload to `POST /api/reports/:id/photos` on a live
+  `docker compose` backend, then `GET /api/files/:fileId`, confirmed
+  byte-identical output and a matching `sha256sum`. Rebuilt only the
+  `backend` image (`docker compose build backend` +
+  `docker compose up -d --no-deps backend`) to pick up the new `multer`
+  dependency — deliberately used `--no-deps` so `hardhat`'s in-memory chain
+  (and the already-deployed contract) wasn't reset, per the existing
+  `up -d backend`-without-`--build` note above.
 
 ## Known issues
 

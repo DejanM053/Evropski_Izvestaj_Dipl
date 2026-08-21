@@ -1,3 +1,4 @@
+const mongoose = require("mongoose");
 const Report = require("../models/Report");
 
 class SealedReportError extends Error {
@@ -18,6 +19,9 @@ function assertReportNotSealed(report) {
 // finalize). Loads the report onto req.report so handlers don't refetch it.
 async function requireUnsealedReport(req, res, next) {
   try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(404).json({ error: "report not found" });
+    }
     const report = await Report.findById(req.params.id);
     if (!report) return res.status(404).json({ error: "report not found" });
     assertReportNotSealed(report);
