@@ -2,7 +2,7 @@
 
 ## Current phase
 
-Phase 5 — Design system → Flutter theme + widgets
+Phase 6 — Screens 1–4 (session pairing)
 
 ## Phases (from master_plan.md §8)
 
@@ -11,7 +11,7 @@ Phase 5 — Design system → Flutter theme + widgets
 - [x] Phase 2 — Docker Compose + backend skeleton + `/api/health`
 - [x] Phase 3 — Session + report CRUD + Socket.IO sync
 - [x] Phase 4 — GridFS uploads + hashing
-- [ ] Phase 5 — Design system → Flutter theme + widgets
+- [x] Phase 5 — Design system → Flutter theme + widgets
 - [ ] Phase 6 — Screens 1–4 (session pairing)
 - [ ] Phase 7 — Screens 5–9 (form, circumstances, sketch, photos)
 - [ ] Phase 8 — Screens 10–11 (review + signatures)
@@ -116,6 +116,48 @@ Phase 5 — Design system → Flutter theme + widgets
   dependency — deliberately used `--no-deps` so `hardhat`'s in-memory chain
   (and the already-deployed contract) wasn't reset, per the existing
   `up -d backend`-without-`--build` note above.
+
+- Design import used the `DesignSync` MCP tool's `get_file`/`list_files`
+  methods directly against project `78016f84-06e4-4866-bbc0-818cdb195c9d`
+  (type `PROJECT_TYPE_PROJECT`, not a design-system project) rather than the
+  `claude_design` MCP server named in master_plan.md §1 — that server wasn't
+  available in this session's tool set, but `DesignSync`'s read methods
+  worked against the same project ID and returned the same three files
+  (`Accident Report App.dc.html`, `android-frame.jsx`, `support.js`), so the
+  extraction is from the same source either way.
+- Fonts (Archivo, IBM Plex Sans, IBM Plex Mono, Caveat) are all freely
+  available (Google Fonts, SIL OFL) — no typeface substitution was needed.
+  Bundled as static `.ttf` files under `mobile/assets/fonts/` (user chose
+  this over the `google_fonts` pub package specifically for zero network
+  dependency at demo time). Archivo/IBM Plex Sans/Caveat ship upstream only
+  as variable fonts (no pre-cut static weights in the google/fonts repo), so
+  each is declared once in `pubspec.yaml` with multiple `weight:` entries
+  pointing at the same file — Flutter/Skia renders the correct instance per
+  declared weight. IBM Plex Mono has real static weight files upstream, used
+  directly. See `.claude/rules/mobile.md` for the full token/widget map.
+- `confirmed` and `verified` `StatusChip` variants intentionally share one
+  color family (`AppColors.success*`) — the source design's own component
+  spec sheet only shows one positive-status chip ("Potvrđeno · 14:12"), and
+  never visually distinguishes "a party confirmed review" from "the hash
+  check passed"; callers separate them by label/context.
+- `AppButtonVariant.destructive` and all three variants' disabled states are
+  not in the source design (it never shows a filled-red or a disabled
+  button) — derived from the existing error-color tokens and a muted
+  border/text treatment, per master_plan.md §1's instruction to derive
+  missing states from existing tokens rather than invent new styling.
+- Verified Phase 5's "Done when" on a real device, not just `flutter
+  analyze`/`flutter test`: built and ran the app on the `Pixel_10` Android
+  emulator (`flutter run -d emulator-5554`), then used `adb exec-out
+  screencap` to capture the full scrolled gallery and visually compared
+  every section against the source screens/spec sheet (colors, type scale,
+  spacing/radii swatches, all 3 button variants × enabled/disabled, all 4
+  text-field states, the circumstances grid checked/unchecked, section
+  header + card, all 4 status chips, both `MonoDataRow` layouts, and the
+  session progress header). `flutter run`'s CLI session detaches
+  ("Lost connection to device") when driven non-interactively with no
+  attached stdin — expected, and unrelated to the app itself; relaunched via
+  `adb shell am start -n com.example.my_app/.MainActivity` to keep
+  screenshotting without needing an attached debug session.
 
 ## Known issues
 
