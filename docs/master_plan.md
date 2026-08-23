@@ -283,7 +283,18 @@ Build these to match the imported design, sharing the theme and widget set from 
 
 `docker-compose.yml` with three services: `mongo` (volume-persisted), `hardhat` (`npx hardhat node --hostname 0.0.0.0`), `backend` (depends on both). Backend env: `MONGO_URI`, `RPC_URL`, `CONTRACT_ADDRESS`, `PRIVATE_KEY`, `CHAIN_NETWORK`, `PORT`. Provide `.env.example` with safe placeholders and never commit a real key.
 
-Networking for the Flutter client: emulator → `http://10.0.2.2:3000`; USB device → `adb reverse tcp:3000 tcp:3000`; Wi-Fi → LAN IP. Read the base URL from `--dart-define=API_URL=...`, never hardcode.
+Networking for the Flutter client: emulator → `http://10.0.2.2:3000`; USB device → `adb reverse tcp:3000 tcp:3000`. Read the base URL from `--dart-define=API_URL=...`, never hardcode.
+
+**Standard two-device setup, for both routine testing and the defense demo:**
+one Android emulator as party A, one USB-connected physical phone as party
+B — no Wi-Fi/LAN networking required. Launch each with its own
+`--dart-define=API_URL` (emulator gets `10.0.2.2`, phone relies on the
+`adb reverse` tunnel above and can use `http://localhost:3000` or
+`http://127.0.0.1:3000`). To pair them, scan the QR the emulator renders on
+its window using the physical phone's real camera — an on-screen QR code is
+scannable exactly like a printed one, no emulator camera/webcam passthrough
+needed. This is sufficient for a bachelor-thesis proof of concept; a genuine
+two-physical-phone/LAN Wi-Fi setup is not required anywhere in this plan.
 
 ---
 
@@ -312,7 +323,7 @@ Automated: Hardhat contract tests; a handful of backend integration tests (creat
 
 **Demo script to include in the README** — rehearse this:
 1. `docker compose up -d`, show `/api/health`.
-2. Phone A creates a session; phone B scans the QR.
+2. Emulator (party A) creates a session; the physical phone (party B) scans the QR off the emulator screen.
 3. Both fill their halves — point out live sync in the header.
 4. Add photos and sketch; review; both sign.
 5. Show the finalize log: hash → store → anchor; show the tx on the block explorer.
@@ -330,7 +341,7 @@ User accounts, passwords, OAuth; user-held wallets or gas payment; insurance-com
 
 ## 11. Acceptance checklist
 
-- [ ] Two physical devices complete a report end to end over the network.
+- [ ] An emulator (party A) and one USB-connected physical phone (party B) complete a report end to end.
 - [ ] Report becomes immutable after both signatures; server rejects late writes.
 - [ ] PDF is generated and matches the statement structure with photos, sketch, and both signatures embedded.
 - [ ] PDF and every attachment have stored SHA-256 hashes.

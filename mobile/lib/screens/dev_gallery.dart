@@ -3,11 +3,12 @@ import 'package:flutter/material.dart';
 import '../theme/theme.dart';
 import '../widgets/widgets.dart';
 
-/// Phase 5 scaffolding only: renders every shared widget in every state so
-/// the design-token extraction can be checked visually on a device. Wired
-/// as the app's temporary home route — none of the 15 real screens exist
-/// yet (see docs/master_plan.md §6, PROGRESS.md). Delete/replace this route
-/// once screen 1 (Home) lands in Phase 6.
+/// Scaffolding only: renders every shared widget in every state so the
+/// design-token extraction can be checked visually on a device. No longer
+/// the app's home route as of Phase 6 (see `main.dart`/`home_screen.dart`)
+/// — reachable only via the debug-only gallery icon on the Home screen's
+/// header, which is itself gated on `kDebugMode` and absent from release
+/// builds.
 class DevGalleryScreen extends StatefulWidget {
   const DevGalleryScreen({super.key});
 

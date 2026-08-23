@@ -2,7 +2,7 @@
 
 ## Current phase
 
-Phase 6 — Screens 1–4 (session pairing)
+Phase 7 — Screens 5–9 (form, circumstances, sketch, photos)
 
 ## Phases (from master_plan.md §8)
 
@@ -12,7 +12,7 @@ Phase 6 — Screens 1–4 (session pairing)
 - [x] Phase 3 — Session + report CRUD + Socket.IO sync
 - [x] Phase 4 — GridFS uploads + hashing
 - [x] Phase 5 — Design system → Flutter theme + widgets
-- [ ] Phase 6 — Screens 1–4 (session pairing)
+- [x] Phase 6 — Screens 1–4 (session pairing)
 - [ ] Phase 7 — Screens 5–9 (form, circumstances, sketch, photos)
 - [ ] Phase 8 — Screens 10–11 (review + signatures)
 - [ ] Phase 9 — PDF generation
@@ -22,6 +22,16 @@ Phase 6 — Screens 1–4 (session pairing)
 
 ## Decisions
 
+- Two-device testing standard is emulator (party A) + one USB-connected
+  physical phone (party B), not two physical phones over Wi-Fi/LAN — updated
+  master_plan.md §7/§9/§11 accordingly (networking note, demo script step 2,
+  and the acceptance checklist item). Pairing works by scanning the QR the
+  emulator renders on its window with the phone's real camera; no
+  camera-passthrough emulator config or LAN setup needed. Chosen because
+  it's simpler to set up for a bachelor-thesis proof of concept and Wi-Fi/AP
+  isolation on unfamiliar networks (e.g. university Wi-Fi) is a real risk to
+  demo-day reliability. Applies to Phases 6–12 dev testing and the final
+  defense demo alike, not just routine development.
 - Pinned Hardhat to 2.29.1 (with hardhat-toolbox 6.1.2) instead of the
   default Hardhat 3 install: HH3's ESM config, node:test runner, and
   viem-first networking don't match the plan's `npx hardhat node` /
@@ -158,6 +168,88 @@ Phase 6 — Screens 1–4 (session pairing)
   attached stdin — expected, and unrelated to the app itself; relaunched via
   `adb shell am start -n com.example.my_app/.MainActivity` to keep
   screenshotting without needing an attached debug session.
+
+- `dio` (not `http`) is the one REST client used by `lib/services/api_client.dart`
+  — master_plan.md §2 lists both as options and says to pick one and use it
+  consistently; `dio` was chosen ahead of Phase 7/9's multipart photo/sketch/
+  signature uploads (§6 screen 9 wants per-file progress, which `dio` gives
+  via `onSendProgress` and `http` doesn't natively). `provider` (not
+  `riverpod`) is the one state-management package, used narrowly for
+  `SessionController` (see below) rather than app-wide — nothing else in
+  Phase 6 needed shared state.
+- `lib/services/socket_client.dart` forces `transports: ['websocket']`
+  (skips the engine.io polling handshake). Tested against this backend: the
+  default transport list (polling first, then upgrade) never completes its
+  initial handshake at all, on either the Android emulator or a physical
+  device — websocket-only connects immediately on both. Do not "fix"
+  reconnect issues by removing this; that was tried and made things worse
+  (see the bug below).
+- Found and fixed a real bug during two-device testing: after Vozač A's
+  `CreateSessionScreen` detects Vozač B joining and navigates to
+  `SessionShellScreen`, the new screen's `SessionController` opened its own
+  socket to the same session/party *before* the old screen's transient
+  "watcher" socket (used only to detect B joining) had been torn down by
+  Flutter's normal `State.dispose()` timing. The two sockets briefly
+  overlapping left the new one stuck reconnecting forever (confirmed via
+  Mongo: `partyA.socketId` never changed after the first join, i.e. every
+  reconnect attempt was failing before completing a handshake). Fixed by
+  having `_advanceToShell` in `create_session_screen.dart` explicitly cancel
+  the watcher's subscriptions and call `_socket.dispose()` itself, before
+  calling `Navigator.pushReplacement` — rather than waiting for
+  `State.dispose()` to do it after the new screen is already mounted.
+- QR payload is the raw 6-character `sessionCode` as plain text (no URI
+  scheme, no JSON) — `mobile_scanner` hands back `rawValue` directly and the
+  join flow already takes a plain code from manual entry, so there's one
+  code path either way. The design mockup's "K7M-4RQ2" (7 chars,
+  hyphenated) is decorative only; the real format is exactly 6 chars, no
+  separator (`backend/src/services/session-code.service.js`). The create
+  session screen displays it as two groups of 3 for readability, and the
+  manual-entry field on the join screen is a single 6-char uppercase input
+  (not the design's split boxes — simpler and equally usable; noted as a
+  deliberate deviation, not an oversight).
+- Home screen's History/Verify rows render per the design (screens 14/15
+  aren't built until Phase 11) but are inert — tapping shows a snackbar
+  instead of navigating anywhere. The dev-gallery route survives as a
+  `kDebugMode`-gated icon button in Home's header instead of being deleted,
+  per the task's "keep the file, reachable via a debug-only entry point."
+- Added `android.permission.INTERNET` and `android.permission.CAMERA` (plus
+  an optional `android.hardware.camera` feature) to the main
+  `AndroidManifest.xml` — INTERNET is normally auto-granted in debug builds
+  via the debug manifest overlay, but this app needs it in release builds
+  too since the whole point is talking to the backend; CAMERA is new this
+  phase for `mobile_scanner`.
+- Verified Phase 6's "Done when" end-to-end, not just `flutter analyze`:
+  `Pixel_10`/`Medium_Phone_1` Android emulator as Vozač A + the
+  USB-connected physical phone as Vozač B, against the real
+  `docker compose` backend. Confirmed via `adb exec-out screencap` on both
+  devices and cross-checked the session document in `mongosh`
+  (`partyA`/`partyB.socketId` and `joinedAt` both set) that each device
+  shows the other as connected in the `SessionProgressHeader` after a real
+  join. **API_URL values that worked:**
+  - Emulator: `http://10.0.2.2:3000` (the standard Android-emulator alias
+    for the host loopback).
+  - USB device: `adb reverse tcp:3000 tcp:3000` once, then
+    `http://localhost:3000` (or `http://127.0.0.1:3000`) — no LAN/Wi-Fi
+    needed, matches the existing Phase 5 decision above.
+  - Wi-Fi/LAN was not used or needed, per that same decision.
+  - `flutter run`'s CLI session reliably detaches ("Lost connection to
+    device") a few seconds after a non-interactive launch on both the
+    emulator and the physical device — same benign behavior noted in Phase
+    5, not a crash; `adb shell am start -n com.example.my_app/.MainActivity`
+    reliably relaunches/refocuses the already-installed app afterward.
+  - This machine's Android emulator (`Pixel_10` with default `gfxstream`
+    graphics, and `Medium_Phone_1` with `-gpu swiftshader_indirect`) showed
+    intermittent fully-black-screen rendering glitches during this session
+    — `adb shell dumpsys window`/`pidof` confirmed the app process stayed
+    alive and focused throughout, so this is an emulator/host GPU rendering
+    issue, not an app crash. `adb shell input keyevent KEYCODE_WAKEUP`
+    followed by a fresh `screencap` recovered it every time it happened. If
+    this recurs during manual testing, it's a known quirk, not a regression
+    to chase in the app code.
+  - Windows Developer Mode (symlink support) is still not enabled on this
+    machine, so `flutter run -d windows` fails outright — irrelevant to the
+    Android testing path above, but blocks ever using a Windows desktop
+    build as a stand-in party in future sessions on this machine.
 
 ## Known issues
 

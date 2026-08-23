@@ -1,4 +1,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- REST/Socket.IO calls to the backend (screens 1-4 networking layer). -->
+    <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- mobile_scanner: QR scan on the Join session screen. -->
+    <uses-permission android:name="android.permission.CAMERA"/>
+    <uses-feature android:name="android.hardware.camera" android:required="false"/>
     <application
         android:label="my_app"
         android:name="${applicationName}"

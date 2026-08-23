@@ -109,13 +109,59 @@ screens (not invented ahead of need):
 ## Gallery
 
 `lib/screens/dev_gallery.dart` renders every token group and every widget
-in every state, and is temporarily wired as the app's home route in
-`main.dart`. **Replace `home: const DevGalleryScreen()` with the real Home
-screen (§6 screen 1) as soon as Phase 6 starts** — the gallery is scaffolding,
-not a screen in the 15-screen set, and should not ship.
+in every state. As of Phase 6 it is no longer the home route — `main.dart`
+wires the real Home screen (§6 screen 1) instead — and is reachable only
+via a `kDebugMode`-gated icon in Home's header (absent from release
+builds). The gallery is scaffolding, not a screen in the 15-screen set, and
+should not ship as a reachable route in a release build.
+
+## Screens 1-4 & networking (Phase 6)
+
+`lib/services/api_client.dart` (REST, via `dio`) and
+`lib/services/socket_client.dart` (Socket.IO, via `socket_io_client`) wrap
+the endpoints/events in docs/master_plan.md §5.2/§5.3. Both take a
+`baseUrl` — always `Env.apiUrl` (`lib/config/env.dart`, reading
+`--dart-define=API_URL`), never hardcoded; `main.dart` shows an explicit
+error screen instead of falling back to a guessed host if it's empty.
+
+`lib/state/session_controller.dart` is a `ChangeNotifier` created per
+session (by `SessionShellScreen`) that owns one `SocketClient`: it joins on
+construction, re-joins automatically on every reconnect (see
+`socket_client.dart`'s doc comment — `session:join` is idempotent and
+socket.io's own `connect` event fires on both first connect and every
+reconnect, which is what drives the `session:state` resync), and tracks
+`connectionState`/`otherPartyConnected` for the header and the shell's
+reconnecting banner. Phases 7+ read/write through this same controller
+(`sendPatch`/`sendReady`) rather than opening their own socket.
+
+`socket_client.dart` forces `transports: ['websocket']` — confirmed by
+testing that the default (polling-first) transport list never completes
+its handshake against this backend, on emulator or physical device.
+Don't remove this to chase a reconnect bug; that was tried and broke the
+connection outright on both platforms (see PROGRESS.md). Any screen that
+opens its own short-lived `SocketClient` (e.g. `CreateSessionScreen`
+watching for the other party to join) must explicitly cancel its stream
+subscriptions and call `.dispose()` on it itself before navigating away —
+not rely on `State.dispose()` — since the next screen's own socket can
+otherwise start up while the old one is still overlapping it, which was
+observed to leave the new socket stuck reconnecting indefinitely.
+
+`lib/models/` mirrors the full `Report`/`Session` Mongoose schemas
+(fromJson/toJson, no validation) even though Phase 6 only reads
+`status`/party connectivity off them — so Phase 7's form screens can start
+patching real fields immediately.
+
+Session codes are always exactly 6 characters
+(`backend/src/services/session-code.service.js`'s `ALPHABET`/`CODE_LENGTH`)
+— the design mockup's "K7M-4RQ2" 7-char hyphenated display is decorative
+only, not the real format. The QR encodes the raw 6-char code as plain
+text (no URI scheme); the create-session screen displays it as two
+groups of 3 for readability. History (screen 15) and Verify (screen 14)
+rows on Home render per the design but are inert (snackbar) until Phase
+11 builds those screens.
 
 ## Scope note
 
-Phase 5 is tokens + shared widgets only. No screens, models, or networking
-(`socket_io_client`, `dio`/`http`) were added — those start in Phase 6. See
-PROGRESS.md for the phase table.
+Phase 5 was tokens + shared widgets only, with no screens, models, or
+networking. Phase 6 (screens 1-4, session pairing) added all three — see
+the section above and PROGRESS.md for the phase table.
