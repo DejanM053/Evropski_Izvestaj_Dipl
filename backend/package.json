@@ -18,9 +18,11 @@
     "express": "^5.2.1",
     "mongoose": "^9.9.3",
     "multer": "^2.2.0",
+    "pdfkit": "^0.17.2",
     "socket.io": "^4.8.3"
   },
   "devDependencies": {
+    "fontkit": "^2.0.4",
     "jest": "^30.4.2",
     "socket.io-client": "^4.8.3",
     "supertest": "^7.2.2"

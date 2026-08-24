@@ -23,6 +23,19 @@ function openDownloadStream(fileId) {
   return getBucket().openDownloadStream(new mongoose.Types.ObjectId(fileId));
 }
 
+// Drains a GridFS file into a single Buffer — for callers that need the
+// whole file in memory (pdf.service.js embedding images), as opposed to
+// files.js's streamed response.
+function getFileBuffer(fileId) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    const downloadStream = openDownloadStream(fileId);
+    downloadStream.on("data", (chunk) => chunks.push(chunk));
+    downloadStream.once("error", reject);
+    downloadStream.once("end", () => resolve(Buffer.concat(chunks)));
+  });
+}
+
 async function getFileMetadata(fileId) {
   const files = await getBucket()
     .find({ _id: new mongoose.Types.ObjectId(fileId) })
@@ -34,4 +47,4 @@ async function deleteFile(fileId) {
   await getBucket().delete(new mongoose.Types.ObjectId(fileId));
 }
 
-module.exports = { storeBuffer, openDownloadStream, getFileMetadata, deleteFile, BUCKET_NAME };
+module.exports = { storeBuffer, openDownloadStream, getFileBuffer, getFileMetadata, deleteFile, BUCKET_NAME };

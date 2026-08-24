@@ -2,7 +2,7 @@
 
 ## Current phase
 
-Phase 9 — PDF generation
+Phase 10 — Finalize + anchor + screens 12–13
 
 ## Phases (from master_plan.md §8)
 
@@ -15,7 +15,7 @@ Phase 9 — PDF generation
 - [x] Phase 6 — Screens 1–4 (session pairing)
 - [x] Phase 7 — Screens 5–9 (form, circumstances, sketch, photos)
 - [x] Phase 8 — Screens 10–11 (review + signatures)
-- [ ] Phase 9 — PDF generation
+- [x] Phase 9 — PDF generation
 - [ ] Phase 10 — Finalize + anchor + screens 12–13
 - [ ] Phase 11 — Verify endpoint + screens 14–15
 - [ ] Phase 12 — Testnet deploy + README + demo script
@@ -608,6 +608,157 @@ Phase 9 — PDF generation
     the running stack matches this code; did not drive the mobile UI
     end-to-end (the user is testing that themselves this round, per their
     own request).
+
+- **Phase 9** — `services/pdf.service.js`, §5.6 layout. Generation only —
+  this phase never calls the chain (no `chain.service.js`/`ethers` import).
+  - **Chose `pdfkit` over `pdf-lib`** (§2 lists both, pick-one-and-use-it-
+    consistently like `dio`/`provider` before it). `pdfkit`'s `.text()`
+    does automatic word-wrap *and* automatic page-break-on-overflow in
+    flowing mode, which is most of what §9.4's "very long remarks" and
+    "photo appendix spanning multiple pages" cases need for free;
+    `pdf-lib` would have meant hand-rolling both. Trade-off taken
+    knowingly: `pdfkit`'s auto-pagination only applies to flowing text, not
+    to absolutely-positioned draws (the two-column grids, the circumstance
+    checkboxes, images) — those are paginated by hand (see below), which
+    `pdf-lib` would have needed everywhere anyway.
+  - **Layout mixes two drawing strategies deliberately.** Fixed-shape data
+    (driver/vehicle/insurer/policyholder fields, the circumstances grid) is
+    drawn at explicit `x`/`y` in two hand-synced columns with a page-break
+    check (`ensureSpace`) *before* the block starts, so a row is never
+    split mid-draw — safe because these fields have a small, bounded row
+    count. Free-typed content (`visibleDamage`/`remarks`) instead uses
+    `pdfkit`'s plain flowing `.text()` with no explicit position, so
+    arbitrarily long text wraps and paginates on its own. The photo
+    appendix hand-checks available space per *row* (2 photos/row) before
+    drawing it, calling `doc.addPage()` itself when a row won't fit — this
+    is the "spans multiple pages" case, verified in
+    `backend/test/pdf.test.js` by asserting page count > 1 for a
+    14-photo report.
+  - **Footer trimmed twice, on request, down to just a page number.**
+    Originally carried report ID, PDF SHA-256, contract address, and
+    network; first pass dropped the first three (already shown in the
+    app's own report history/detail views — pure duplication here), which
+    also retired the one piece of real complexity the footer had caused:
+    the SHA-256 line needed a two-pass build (render once to hash the
+    result, then re-render with that hash filled in — a document can't
+    literally contain the hash of its own final bytes). Second pass
+    dropped the contract address too, once it became clear a lone address
+    with no report ID/network/tx-hash context around it doesn't actually
+    mean anything — it's not proof this document was anchored to that
+    contract (nothing is, until Phase 10 actually anchors it). No chain
+    data of any kind appears in the PDF now. `generateReportPdf` is
+    single-pass — nothing left in the document depends on the document's
+    own output, so there was never a real ordering problem here, only the
+    self-referential-hash one the first trim already removed.
+  - **Found and fixed a real bug while regenerating a preview after the
+    first trim: every page was gaining 1-2 blank trailing pages.**
+    `stampFooterOnAllPages` drew its text at `y = page.height -
+    margins.bottom + 18` — deliberately *inside* the reserved bottom-margin
+    strip, since that's where a footer belongs. But pdfkit's own text
+    engine doesn't know that positioning is deliberate: its overflow check
+    (would this line's bottom edge land past `page.height -
+    margins.bottom`) fires regardless of whether the position was reached
+    by flowing or by an explicit `x`/`y` argument, and silently calls
+    `doc.addPage()` first when it does — confirmed by a standalone pdfkit
+    repro script (3 real content pages → 9 after footer-stamping with two
+    `.text()` calls per page at that position). Fixed by temporarily
+    zeroing `doc.page.margins.bottom` around each page's footer draw (a
+    known pdfkit footer-stamping pattern) so the check's own boundary
+    moves down along with where we're actually drawing; restored
+    immediately after. Re-verified with the same repro script (3 pages in,
+    3 pages out) and added a regression test in `pdf.test.js` asserting an
+    exact page count (not just "> 1") for the fully-filled fixture, plus
+    tightened the long-remarks and 14-photo tests' `> 1` assertions with
+    upper bounds too — none of the three would have caught this
+    regression with only a lower-bound check, since a doubled page count
+    still satisfies "> 1".
+  - **Circumstance labels ported to a new `backend/src/constants/
+    circumstances.js`**, verbatim from `mobile/lib/models/circumstances.dart`
+    `kCircumstances` (same order, same Serbian wording) — so the PDF's grid
+    reads identically to what the driver actually saw and checked on the
+    Circumstances screen, rather than inventing separate label text
+    server-side.
+  - **`storage.service.js` gained `getFileBuffer(fileId)`** (drains
+    `openDownloadStream` into one `Buffer`) — every existing caller
+    (`files.js`) streams to an HTTP response and never needed the whole
+    file in memory at once; `pdf.service.js` does, to hand raw bytes to
+    `pdfkit`'s `doc.image()`. All three image types (sketch, photos, both
+    signatures) are pre-fetched together via `Promise.all` before either
+    pdfkit pass starts, so the actual page-drawing code stays fully
+    synchronous — missing/failed fetches resolve to `null` and render as
+    an explicit "not available" placeholder rather than aborting the PDF
+    (§9.4 "missing optional fields", extended to attachments too — a
+    report can legitimately be previewed via the Phase 9 dev route before
+    every attachment exists).
+  - **Temporary dev-only preview route**, `backend/src/routes/dev-pdf.js`,
+    mounted at `/api/dev` — `GET /api/dev/reports` (id/status/plates for
+    the newest 50 reports, so a report id can be found without opening
+    `mongosh`) and `GET /api/dev/reports/:id/pdf` (regenerates on demand,
+    no `requireUnsealedReport` guard — a read-only preview has no reason to
+    reject a sealed report, and most reports being iterated against during
+    this phase aren't sealed yet anyway). Explicitly marked temporary in
+    both files' own comments, to be deleted once Phase 10's real
+    `GET /api/reports/:id/pdf` (streams the *stored* PDF from GridFS after
+    finalize) makes it redundant.
+  - Added `backend/test/pdf.test.js`: a bare-minimum report (every optional
+    field/attachment missing), zero photos, a very-long-remarks report
+    (page count bounded both above and below — see the blank-page bug
+    above for why an upper bound matters), a 14-photo report (same), a
+    fully-filled report with real sketch/photo/signature attachments
+    (asserts an exact page count), and the two dev-route endpoints via
+    supertest. Also generated a real PDF from the report the user had just
+    carried through signing during Phase 8's own testing (via the new dev
+    route against the live Docker backend) and sent it to them directly at
+    each iteration of this phase, as a concrete example on real data
+    rather than only synthetic test fixtures. Rebuilt and recreated the
+    `backend` container the same way as prior phases, each time.
+  - **Found and fixed a second real bug, on request: Serbian Latin
+    diacritics (č, ć, š, đ, ž) rendered wrong or vanished entirely.**
+    pdfkit's standard 14 fonts (`Helvetica`, `Courier`, ...) only support
+    WinAnsiEncoding (Windows-1252) — which happens to have Š/š and Ž/ž, but
+    has no code points for Č/č, Ć/ć, or Đ/đ at all, so any word using them
+    (extremely common in Serbian — confirmed by inspecting the earlier
+    PDFs' decompressed content streams, e.g. "Napuštao" → "Naputao",
+    "SAOBRAĆAJNOJ" → garbage bytes) silently dropped the character or
+    rendered the wrong glyph. Fixed by embedding real fonts instead of
+    relying on the standard 14 — specifically the *same* IBM Plex Sans/
+    Mono `.ttf` files already bundled for the Flutter app
+    (`mobile/assets/fonts/`, chosen there for the same Serbian-coverage
+    reason — see `.claude/rules/mobile.md`), copied into a new
+    `backend/src/assets/fonts/` (plus their OFL license files) rather than
+    sourcing a new font. Verified full glyph coverage for all five
+    diacritics (both cases) against the actual files with `fontkit` (the
+    same library pdfkit uses internally for font embedding) before wiring
+    anything up, and again as a permanent regression test.
+    `pdf.service.js`'s `registerFonts` registers three: `Sans` (body/value
+    text — IBM Plex Sans's variable-font file, rendered at its default
+    instance since pdfkit/fontkit can't select a named weight from a
+    variable font), `Mono` (footer), and `Mono-SemiBold` (section
+    headings/labels/party-column headers) — the latter two are real static
+    weight files, unlike Sans, so they're used everywhere the old code
+    used `Helvetica-Bold` for actual bold emphasis; there is no embedded
+    Sans-Bold, so that distinction is gone (acceptable per the "don't
+    stress over the design" guidance — Mono-SemiBold already carries the
+    emphasis role in the app's own type scale, `AppTypography.monoLabel`).
+    Switching fonts changed text metrics enough that the fully-filled test
+    fixture now legitimately needs 3 pages instead of 2 — traced both new
+    `addPage()` calls to their call sites (`drawFreeText`'s own overflow,
+    then `ensureSpace` inside `drawSignatures`) with an instrumented
+    one-off script to confirm this was normal reflow, not a return of the
+    blank-page bug, before updating that test's expected count.
+    Also discovered while investigating: text drawn with a real embedded
+    font is encoded as CID/glyph-index hex strings in the content stream,
+    not simple ASCII-as-hex like the standard 14 fonts use — confirmed by
+    running the same decompress-and-hex-decode trick `pdf.test.js` used
+    for the (now-removed) footer-text assertions and getting back
+    unreadable glyph-index bytes instead of readable text. That technique
+    only ever worked because the document used standard fonts; it can't
+    recover rendered text from this document anymore, so those two
+    assertions and the decompression helper were removed as no longer
+    meaningful, in favor of the font-file glyph-coverage test described
+    above (which doesn't depend on how pdfkit happens to encode the
+    content stream). Rebuilt and recreated the `backend` container again;
+    sent the user a freshly regenerated preview.
 
 ## Known issues
 
