@@ -1,5 +1,6 @@
 const mongoose = require("mongoose");
 const request = require("supertest");
+const { io: ioClient } = require("socket.io-client");
 const { createApp } = require("../src/app");
 const Session = require("../src/models/Session");
 const Report = require("../src/models/Report");
@@ -43,12 +44,13 @@ describe("hash.service", () => {
 });
 
 describe("File uploads (GridFS + hashing)", () => {
-  let app, server, reportId;
+  let app, server, reportId, baseUrl;
 
   beforeAll(async () => {
     await mongoose.connect(process.env.MONGO_URI);
     ({ app, server } = createApp());
     await new Promise((resolve) => server.listen(0, resolve));
+    baseUrl = `http://localhost:${server.address().port}`;
   });
 
   afterAll(async () => {
@@ -139,6 +141,35 @@ describe("File uploads (GridFS + hashing)", () => {
 
       expect(res.status).toBe(409);
     });
+
+    it("broadcasts the updated photo list via report:patched, live to the other party", async () => {
+      const session = await Session.create({
+        sessionCode: "PHOSYN",
+        reportId,
+        expiresAt: new Date(Date.now() + 3600_000),
+      });
+      await Report.findByIdAndUpdate(reportId, { sessionId: session._id });
+
+      const socket = ioClient(baseUrl, { transports: ["websocket"], forceNew: true });
+      await new Promise((resolve) => {
+        socket.once("session:state", resolve);
+        socket.emit("session:join", { sessionId: session._id.toString(), party: "B" });
+      });
+
+      const patched = new Promise((resolve) => socket.once("report:patched", resolve));
+      const res = await request(app)
+        .post(`/api/reports/${reportId}/photos`)
+        .field("party", "A")
+        .attach("file", PNG_BYTES, { filename: "photo.png", contentType: "image/png" });
+      expect(res.status).toBe(201);
+
+      const event = await patched;
+      expect(event.path).toBe("photos");
+      expect(event.value).toHaveLength(1);
+      expect(event.value[0].fileId).toBe(res.body.fileId);
+
+      socket.close();
+    });
   });
 
   describe("DELETE /api/reports/:id/photos/:fileId", () => {
@@ -212,6 +243,83 @@ describe("File uploads (GridFS + hashing)", () => {
       const report = await Report.findById(reportId);
       expect(report.partyA.signature.fileId.toString()).toBe(res.body.fileId);
       expect(report.partyB.signature.fileId).toBeNull();
+    });
+
+    it("broadcasts the signature via report:patched to the session room", async () => {
+      const session = await Session.create({
+        sessionCode: "SIGSYN",
+        reportId,
+        expiresAt: new Date(Date.now() + 3600_000),
+      });
+      await Report.findByIdAndUpdate(reportId, { sessionId: session._id });
+
+      const socket = ioClient(baseUrl, { transports: ["websocket"], forceNew: true });
+      await new Promise((resolve) => {
+        socket.once("session:state", resolve);
+        socket.emit("session:join", { sessionId: session._id.toString(), party: "B" });
+      });
+
+      const patched = new Promise((resolve) => socket.once("report:patched", resolve));
+      const res = await request(app)
+        .post(`/api/reports/${reportId}/signature`)
+        .field("party", "A")
+        .attach("file", PNG_BYTES, { filename: "sig.png", contentType: "image/png" });
+      expect(res.status).toBe(201);
+
+      const event = await patched;
+      expect(event.path).toBe("partyA.signature");
+      expect(event.value.fileId).toBe(res.body.fileId);
+      expect(event.by).toBe("A");
+
+      socket.close();
+    });
+
+    it("locks the report once both signatures and both confirmedReview are present, emitting report:locked", async () => {
+      const session = await Session.create({
+        sessionCode: "LOCK01",
+        reportId,
+        expiresAt: new Date(Date.now() + 3600_000),
+      });
+      await Report.findByIdAndUpdate(reportId, {
+        sessionId: session._id,
+        "partyA.confirmedReview": true,
+        "partyB.confirmedReview": true,
+        "partyB.signature.fileId": new mongoose.Types.ObjectId(),
+        "partyB.signature.signedAt": new Date(),
+      });
+
+      const socket = ioClient(baseUrl, { transports: ["websocket"], forceNew: true });
+      await new Promise((resolve) => {
+        socket.once("session:state", resolve);
+        socket.emit("session:join", { sessionId: session._id.toString(), party: "A" });
+      });
+
+      const locked = new Promise((resolve) => socket.once("report:locked", resolve));
+      const res = await request(app)
+        .post(`/api/reports/${reportId}/signature`)
+        .field("party", "A")
+        .attach("file", PNG_BYTES, { filename: "sig.png", contentType: "image/png" });
+      expect(res.status).toBe(201);
+      await locked;
+
+      const report = await Report.findById(reportId);
+      expect(report.status).toBe("signing");
+      const updatedSession = await Session.findById(session._id);
+      expect(updatedSession.status).toBe("signing");
+
+      socket.close();
+    });
+
+    it("rejects uploads once the report is locked", async () => {
+      await Report.findByIdAndUpdate(reportId, { status: "signing" });
+
+      const res = await request(app)
+        .post(`/api/reports/${reportId}/signature`)
+        .field("party", "A")
+        .attach("file", PNG_BYTES, { filename: "sig.png", contentType: "image/png" });
+
+      expect(res.status).toBe(409);
+      expect(res.body.code).toBe("REPORT_LOCKED");
     });
   });
 

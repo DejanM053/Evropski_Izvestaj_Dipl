@@ -1,7 +1,12 @@
 const Session = require("../models/Session");
 const Report = require("../models/Report");
 const { LOCKED_STATUSES } = require("../models/statuses");
-const { assertReportNotSealed, SealedReportError } = require("../services/report-guard.service");
+const {
+  assertReportNotSealed,
+  SealedReportError,
+  ReportLockedError,
+} = require("../services/report-guard.service");
+const { maybeLockReport } = require("../services/report-lock.service");
 
 function emitError(socket, code, message) {
   socket.emit("session:error", { code, message });
@@ -84,9 +89,15 @@ function registerSessionHandlers(io) {
         await report.save();
 
         io.to(sessionId).emit("report:patched", { path, value, by: party });
+
+        // Cheap idempotent check (Phase 8): a patch into partyA/partyB can be
+        // the one that completes "both confirmed review + both signed" (e.g.
+        // Review screen's confirmedReview patch), so re-check after every
+        // accepted patch rather than trying to filter to just that path.
+        await maybeLockReport(report, session, io);
       } catch (err) {
-        if (err instanceof SealedReportError) {
-          return emitError(socket, "REPORT_SEALED", err.message);
+        if (err instanceof SealedReportError || err instanceof ReportLockedError) {
+          return emitError(socket, err.code, err.message);
         }
         emitError(socket, "INVALID_PATCH", err.message || "failed to apply patch");
       }

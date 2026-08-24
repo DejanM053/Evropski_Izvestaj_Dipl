@@ -10,13 +10,14 @@ import 'steps/accident_details_step.dart';
 import 'steps/circumstances_step.dart';
 import 'steps/my_details_step.dart';
 import 'steps/photos_step.dart';
+import 'steps/review_step.dart';
+import 'steps/signature_step.dart';
 import 'steps/sketch_step.dart';
 
 /// Screen 4 (docs/master_plan.md §6) — the persistent session shell: both
-/// parties' live connection/progress header, wrapping the Phase 7 step flow
-/// (screens 5-9: accident details, my details, circumstances, sketch,
-/// photos). Review/signature (Phase 8) aren't built yet, so the flow
-/// currently ends after Photos.
+/// parties' live connection/progress header, wrapping the full step flow
+/// (screens 5-11: accident details, my details, circumstances, sketch,
+/// photos, review, signature).
 class SessionShellScreen extends StatelessWidget {
   const SessionShellScreen({
     super.key,
@@ -47,7 +48,7 @@ class SessionShellScreen extends StatelessWidget {
   }
 }
 
-/// One entry per step screen (5-9). `key` is broadcast as the socket
+/// One entry per step screen (5-11). `key` is broadcast as the socket
 /// `party:ready` `stage` value (an opaque display string per
 /// .claude/rules/backend.md — the other party's client re-derives its own
 /// label/progress from this list, it never persisted-parses server state),
@@ -64,7 +65,11 @@ const _kSteps = [
   _StepInfo('circumstances', 'Okolnosti'),
   _StepInfo('sketch', 'Skica'),
   _StepInfo('photos', 'Fotografije'),
+  _StepInfo('review', 'Pregled'),
+  _StepInfo('signature', 'Potpis'),
 ];
+
+const _kReviewStepIndex = 5;
 
 /// Step 1/8 is session pairing (screens 1-4, already behind us by the time
 /// the shell mounts) — the flow here picks up at step 2/8.
@@ -95,6 +100,7 @@ class _SessionShellBody extends StatefulWidget {
 class _SessionShellBodyState extends State<_SessionShellBody> {
   SessionErrorEvent? _shownError;
   int _stepIndex = 0;
+  bool _lockJumpDone = false;
 
   @override
   void initState() {
@@ -114,10 +120,17 @@ class _SessionShellBodyState extends State<_SessionShellBody> {
     _announceStep();
   }
 
-  void _notYetAvailable() {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Pregled i potpisivanje stižu u sledećoj fazi razvoja.')),
-    );
+  // Once the report locks (Phase 8: both parties confirmed + signed), jump
+  // once to the Review step if the viewer is sitting on an earlier one
+  // (e.g. they went back to re-check something while the other party
+  // finished signing) — otherwise every earlier step's own "next" button
+  // becomes unreachable under the read-only overlay below, with no other
+  // way forward. Only fires once per shell lifetime so it doesn't fight a
+  // deliberate back-navigation afterward.
+  void _maybeJumpToReviewOnLock(bool isLocked) {
+    if (!isLocked || _lockJumpDone || _stepIndex >= _kReviewStepIndex) return;
+    _lockJumpDone = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) => _goToStep(_kReviewStepIndex));
   }
 
   void _maybeShowError() {
@@ -165,6 +178,8 @@ class _SessionShellBodyState extends State<_SessionShellBody> {
     final selfLabel = controller.selfParty == 'A' ? 'VI · VOZAČ A' : 'VI · VOZAČ B';
     final otherLabel = controller.selfParty == 'A' ? 'DRUGI VOZAČ · B' : 'DRUGI VOZAČ · A';
     final otherStage = controller.otherPartyStage;
+    final isLocked = controller.isLocked;
+    _maybeJumpToReviewOnLock(isLocked);
 
     return Scaffold(
       backgroundColor: AppColors.paper,
@@ -189,6 +204,7 @@ class _SessionShellBodyState extends State<_SessionShellBody> {
                 isSelf: false,
               ),
             ),
+            if (isLocked) const _LockedBanner(),
             if (!connected) const _ReconnectingBanner(),
             _StepHeaderBar(
               title: _kSteps[_stepIndex].title,
@@ -196,15 +212,30 @@ class _SessionShellBodyState extends State<_SessionShellBody> {
               onBack: _handleBack,
             ),
             Expanded(
-              child: IndexedStack(
-                index: _stepIndex,
-                children: [
-                  AccidentDetailsStep(onNext: () => _goToStep(1)),
-                  MyDetailsStep(onNext: () => _goToStep(2)),
-                  CircumstancesStep(onNext: () => _goToStep(3)),
-                  SketchStep(reportId: widget.reportId, onNext: () => _goToStep(4)),
-                  PhotosStep(reportId: widget.reportId, onNext: _notYetAvailable),
-                ],
+              // §6 client rules: "block all edit affordances when status ≥
+              // signing" — a single overlay here (rather than threading
+              // `enabled`/`isLocked` through every field on every step)
+              // covers all of them at once, including screens the user
+              // might navigate back to. Dimmed to signal read-only, not
+              // hidden, since the data itself is still exactly what's on
+              // the (now locked) Review screen.
+              child: IgnorePointer(
+                ignoring: isLocked,
+                child: Opacity(
+                  opacity: isLocked ? 0.6 : 1,
+                  child: IndexedStack(
+                    index: _stepIndex,
+                    children: [
+                      AccidentDetailsStep(onNext: () => _goToStep(1)),
+                      MyDetailsStep(onNext: () => _goToStep(2)),
+                      CircumstancesStep(onNext: () => _goToStep(3)),
+                      SketchStep(reportId: widget.reportId, onNext: () => _goToStep(4)),
+                      PhotosStep(reportId: widget.reportId, onNext: () => _goToStep(5)),
+                      ReviewStep(onNext: () => _goToStep(6)),
+                      SignatureStep(reportId: widget.reportId),
+                    ],
+                  ),
+                ),
               ),
             ),
           ],
@@ -249,6 +280,36 @@ class _StepHeaderBar extends StatelessWidget {
                 Text(title, style: AppTypography.titleSmall.copyWith(color: AppColors.textPrimary)),
                 Text(stepLabel, style: AppTypography.monoEyebrow.copyWith(color: AppColors.textMuted)),
               ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Phase 8: shown once `SessionController.isLocked` flips true (both
+/// parties confirmed review and signed — §5.3 `report:locked`). Uses the
+/// `success` triad (matching `StatusChip`'s `confirmed`/`verified`
+/// variants) rather than `pending`/`error` — this is the expected, correct
+/// end state of a finished report, not a problem to flag.
+class _LockedBanner extends StatelessWidget {
+  const _LockedBanner();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      color: AppColors.successBg,
+      padding: const EdgeInsets.symmetric(horizontal: AppSpacing.lg, vertical: AppSpacing.sm + 2),
+      child: Row(
+        children: [
+          const Icon(Icons.lock_outline, size: AppSpacing.md, color: AppColors.successBorder),
+          const SizedBox(width: AppSpacing.sm + 2),
+          Expanded(
+            child: Text(
+              'Izveštaj je zaključan — oba vozača su potpisala. Dalje izmene nisu moguće.',
+              style: AppTypography.bodySmall.copyWith(color: AppColors.successText, fontWeight: FontWeight.w500),
             ),
           ),
         ],

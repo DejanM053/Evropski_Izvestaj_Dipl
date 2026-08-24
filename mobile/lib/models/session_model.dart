@@ -15,6 +15,13 @@ const List<String> kSessionStatuses = [
   'abandoned',
 ];
 
+/// Mirrors `backend/src/models/statuses.js` `LOCKED_STATUSES` (§5.3: "reject
+/// all patches when status is signing or later") — used by
+/// `SessionController.isLocked` to derive the client's own read-only gate
+/// from a `session:state`/reconnect snapshot, independent of the live
+/// `report:locked` event.
+const Set<String> kLockedSessionStatuses = {'signing', 'finalizing', 'sealed', 'abandoned'};
+
 /// Dart mirror of the backend `Session` document (docs/master_plan.md §5.1,
 /// `backend/src/models/Session.js`) — the ephemeral coordination object a
 /// session's two parties join.

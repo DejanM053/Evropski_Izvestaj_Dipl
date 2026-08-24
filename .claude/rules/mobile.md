@@ -160,6 +160,46 @@ groups of 3 for readability. History (screen 15) and Verify (screen 14)
 rows on Home render per the design but are inert (snackbar) until Phase
 11 builds those screens.
 
+## Screens 10-11 & read-only locking (Phase 8)
+
+`lib/screens/steps/review_step.dart` (screen 10) and `signature_step.dart`
+(screen 11) extend the same `SessionShellScreen` `IndexedStack` step flow
+Phase 7 established — `_kSteps` now has 7 entries (steps 2-8 of 8; step 1 is
+pairing, screens 1-4). Review's "Potvrđujem da su podaci tačni" button sends
+a plain `report:patch` to `partyX.confirmedReview` (already own-subtree
+patchable, no new endpoint) rather than anything bespoke. Signature uses the
+`signature` pub package (not a hand-rolled `CustomPainter` like the sketch
+step) — its own canvas ships `clear()`/`undo()`/`redo()`, matching §6 screen
+11's "clear/redo" directly; export is pinned to a fixed 600×300 canvas via
+`toPngBytes(width:, height:)` rather than the package's default
+cropped-to-strokes size, uploaded via the new `ApiClient.uploadSignature`.
+
+`SessionController.isLocked` is the one flag every screen reads for "am I
+still editable" — derived from a `session:state` snapshot's `status` (a new
+`kLockedSessionStatuses` set in `session_model.dart`, mirroring the
+backend's `LOCKED_STATUSES`) or set immediately by a live `report:locked`
+event (`.claude/rules/backend.md`). `SessionShellScreen` wraps its *entire*
+step `IndexedStack` — not just Review/Signature — in one
+`IgnorePointer(ignoring: isLocked)` + dimmed `Opacity`, plus a
+`_LockedBanner`, rather than threading an `enabled`/`isLocked` prop through
+every `PatchTextField`/`PatchToggleRow`/button on every step screen
+individually. This is why gating "every edit affordance" required no
+changes at all to `accident_details_step.dart`, `my_details_step.dart`,
+`circumstances_step.dart`, `sketch_step.dart`, or `photos_step.dart` — the
+gate lives above all of them. One consequence: a step's own "next" button
+lives inside the same ignored region, so `_SessionShellBodyState` has a
+one-time `_maybeJumpToReviewOnLock` that jumps to Review the first time
+`isLocked` flips true while the viewer is sitting on an earlier step (e.g.
+they went back to double-check something while the other party finished
+signing) — otherwise there'd be no way forward once locked.
+
+Photos are now live-synced between parties (closing the Phase 7 "not
+live-synced" known issue) as a side effect of the server broadcasting
+`report:patched` with `path: "photos"` after its own upload/delete — no
+mobile-side change was needed for this, `photos_step.dart`'s existing
+local-optimistic/dedupe-by-fileId merge (Phase 7) already treats "fileId is
+in the remote list" as the signal to drop its own optimistic entry.
+
 ## Scope note
 
 Phase 5 was tokens + shared widgets only, with no screens, models, or

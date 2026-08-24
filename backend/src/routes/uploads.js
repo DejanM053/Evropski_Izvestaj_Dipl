@@ -1,9 +1,11 @@
 const express = require("express");
 const multer = require("multer");
 const mongoose = require("mongoose");
+const Session = require("../models/Session");
 const { requireUnsealedReport } = require("../services/report-guard.service");
 const storage = require("../services/storage.service");
 const { sha256 } = require("../services/hash.service");
+const { maybeLockReport } = require("../services/report-lock.service");
 
 const router = express.Router();
 
@@ -47,6 +49,23 @@ function requireFile(req, res, next) {
   next();
 }
 
+// Broadcasts a `report:patched`-shaped event (§5.3) from a REST route,
+// reusing the exact {path, value, by} contract clients already handle for
+// socket-originated patches — no new event type needed. `photos` can't go
+// through the *client*-initiated report:patch path (classifyPatchPath in
+// session.socket.js rejects it: a client-supplied whole-array replace would
+// be unsafe last-write-wins for an additive list), but that restriction is
+// about validating untrusted client input, not about what the server itself
+// may broadcast after its own atomic, already-persisted mutation. Used to
+// close the "photos aren't live-synced" gap (PROGRESS.md Known issues) and
+// to sync a just-uploaded signature, both needed so the Review screen
+// (Phase 8) shows the true both-sides state without requiring a reconnect.
+function broadcastPatch(req, report, path, value, by) {
+  const io = req.app.get("io");
+  if (!io || !report.sessionId) return;
+  io.to(String(report.sessionId)).emit("report:patched", { path, value, by });
+}
+
 // Removes the attachmentHashes entry for a file being replaced (sketch and
 // signature are single-slot per report/party, unlike photos which are
 // additive), and best-effort deletes the now-orphaned GridFS blob.
@@ -87,6 +106,8 @@ router.post(
       report.attachmentHashes.push({ fileId, sha256: hash, kind: "photo" });
       await report.save();
 
+      broadcastPatch(req, report, "photos", report.toObject().photos, party);
+
       res.status(201).json({ fileId, sha256: hash, caption: caption || "", party, takenAt });
     } catch (err) {
       next(err);
@@ -112,6 +133,8 @@ router.delete("/:id/photos/:fileId", requireUnsealedReport, async (req, res, nex
     report.photos = report.photos.filter((p) => !p.fileId || !p.fileId.equals(fileId));
     await replaceAttachment(report, fileId);
     await report.save();
+
+    broadcastPatch(req, report, "photos", report.toObject().photos, "system");
 
     res.status(204).end();
   } catch (err) {
@@ -177,6 +200,15 @@ router.post(
       report[partyKey].signature.signedAt = signedAt;
       report.attachmentHashes.push({ fileId, sha256: hash, kind: "signature" });
       await report.save();
+
+      broadcastPatch(req, report, `${partyKey}.signature`, { fileId: fileId.toString(), signedAt }, party);
+
+      // Phase 8: a signature is the other half (alongside confirmedReview,
+      // patched via the generic report:patch mechanism) of the "lock"
+      // condition — check it here too, since this REST route is a write
+      // path maybeLockReport's caller in session.socket.js never sees.
+      const session = report.sessionId ? await Session.findById(report.sessionId) : null;
+      await maybeLockReport(report, session, req.app.get("io"));
 
       res.status(201).json({ fileId, sha256: hash, party, signedAt });
     } catch (err) {

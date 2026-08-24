@@ -31,6 +31,10 @@ function createApp() {
 
   const server = http.createServer(app);
   const io = new Server(server, { cors: { origin: "*" } });
+  // REST routes that can trigger a live broadcast (uploads.js: photos sync,
+  // signature sync + Phase 8 locking) reach the same Socket.IO server via
+  // req.app.get("io") rather than each importing/creating their own.
+  app.set("io", io);
   registerSessionHandlers(io);
 
   return { app, server, io };

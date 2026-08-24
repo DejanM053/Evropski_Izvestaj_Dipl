@@ -23,9 +23,19 @@ call wires everything.
 | S→C | `report:patched` | `{path, value, by}` | Broadcast to the **whole room including the sender** — the sender's own patch is echoed back as the save-confirmed value, not skipped. |
 | C→S | `party:ready` | `{party, stage}` | Sets `session.partyX.ready = true` and persists. `stage` is **not** persisted (no schema field for it) — it's forwarded as-is in the broadcast, purely for the client's "other driver is on step Y" header. |
 | S→C | `party:status` | `{party, stage, ready}` | Broadcast to the room on both `session:join` (stage: null) and `party:ready`. |
-| S→C | `report:locked` | — | Not emitted yet — no handler sets it. Wire this up in the signatures phase (§6 screen 11 / Phase 8) once both signatures land. |
+| S→C | `report:locked` | — (no payload) | Phase 8: emitted by `report-lock.service.js`'s `maybeLockReport` once both parties have `confirmedReview` **and** a stored `signature.fileId`. Checked after every accepted `report:patch` (`session.socket.js`) and after every signature REST upload (`uploads.js`, the one write path the socket handler never sees). Idempotent — a no-op once `report.status` is already at or past `"signing"`. |
 | S→C | `report:sealed` | `{pdfFileId, txHash, blockNumber}` | Not emitted yet — belongs to the finalize pipeline (§5.4 / Phase 10). |
-| S→C | `session:error` | `{code, message}` | Emitted to the offending socket only (never broadcast). Known codes: `INVALID_PARTY`, `SESSION_NOT_FOUND`, `NOT_JOINED`, `INVALID_PATCH`, `FORBIDDEN_PATCH`, `SESSION_LOCKED`, `REPORT_NOT_FOUND`, `REPORT_SEALED`, `INTERNAL_ERROR`. |
+| S→C | `session:error` | `{code, message}` | Emitted to the offending socket only (never broadcast). Known codes: `INVALID_PARTY`, `SESSION_NOT_FOUND`, `NOT_JOINED`, `INVALID_PATCH`, `FORBIDDEN_PATCH`, `SESSION_LOCKED`, `REPORT_NOT_FOUND`, `REPORT_SEALED`, `REPORT_LOCKED`, `INTERNAL_ERROR`. |
+
+Two REST routes also broadcast `report:patched` themselves (`uploads.js`'s
+`broadcastPatch` helper), reusing the same `{path, value, by}` shape a
+client-originated patch produces even though no client ever sent one: photo
+upload/delete (`path: "photos"`, the full updated array — safe here even
+though a *client*-initiated patch to `photos` is rejected, see rule 1 below,
+because this is the server's own already-persisted state, not
+client-supplied last-write-wins) and signature upload (`path:
+"partyX.signature"`, `{fileId, signedAt}`). Needed so Review (Phase 8) and
+any reconnect-free client see both parties' photos/signatures live.
 
 ### The three patch rules, as implemented
 
@@ -41,31 +51,51 @@ call wires everything.
    `report:patched` broadcast, specifically so a client that reconnects mid-session
    and calls `session:join` again always sees every prior patch in `session:state`.
 
-### Sealed guard
+### Sealed/locked guard
 
 One guard, two call sites — both defined in `src/services/report-guard.service.js`:
-- `assertReportNotSealed(report)` — throws `SealedReportError` if `report.status === "sealed"`. Called directly inside `report:patch`.
-- `requireUnsealedReport` — Express middleware wrapping the same assertion for
-  future mutating REST routes (photos/sketch/signature/finalize). Not wired to
-  any route yet since none of those routes exist as of Phase 3 — import and use
-  it, don't re-implement the check.
+- `assertReportNotSealed(report)` — throws `SealedReportError` (code
+  `REPORT_SEALED`) if `report.status === "sealed"`, or `ReportLockedError`
+  (code `REPORT_LOCKED`, Phase 8) if `report.status` is any other
+  `LOCKED_STATUSES` value (`signing`/`finalizing`/`abandoned`). Called
+  directly inside `report:patch`.
+- `requireUnsealedReport` — Express middleware wrapping the same assertion,
+  used by every mutating REST route (photos/sketch/signature) since Phase 7/8.
 
 Separately, `report:patch` also rejects when `session.status` is in
 `LOCKED_STATUSES` (`signing`, `finalizing`, `sealed`, `abandoned` — see
 `src/models/statuses.js`), per §5.3's "reject all patches when status is
 signing or later." This is a **session**-level gate distinct from the
-**report**-level sealed guard; both run on every patch.
+**report**-level sealed/locked guard; both run on every patch. From Phase 8
+on, both gates trip together — see `report-lock.service.js` below.
+
+### Locking (Phase 8)
+
+`src/services/report-lock.service.js`'s `maybeLockReport(report, session,
+io)` is the single place that decides "both sides are done": both
+`partyA`/`partyB.confirmedReview` true **and** both
+`partyA`/`partyB.signature.fileId` set. When that becomes true it sets
+**both** `Report.status` and `Session.status` to `"signing"` (in the same
+call — this is what keeps them in sync from this transition on, see below)
+and emits `report:locked`. It's idempotent (a no-op once `report.status` is
+already at or past `"signing"`), so callers don't need to figure out
+whether *their* write was the one that completed the pair — just call it
+after any write that could plausibly contribute: after every accepted
+`report:patch` in `session.socket.js`, and after a signature REST upload in
+`uploads.js`.
 
 ### Known scope gaps (intentional, left for later phases)
 
-- `Session.status` only ever reaches `"waiting"` (on create) or `"joined"`
-  (on REST join) right now. Nothing auto-advances it to `filling`/`review`/
-  `signing`/`finalizing`/`sealed` — that will land with the routes/UI that
-  actually drive those transitions (review confirmation, signatures, finalize).
-  Don't assume `party:ready` advances `status`; currently it only flips the
+- `Session.status` only ever reaches `"waiting"` (on create), `"joined"`
+  (on REST join), or `"signing"` (Phase 8's `maybeLockReport`, once locked)
+  right now. Nothing auto-advances it through `filling`/`review` — that
+  will land with the routes/UI that actually drive those transitions.
+  Don't assume `party:ready` advances `status`; it only flips the
   per-party `ready` flag and rebroadcasts.
-- `Session.status` and `Report.status` are **not** kept in sync with each
-  other. They start independently at `"waiting"`. Decide the sync strategy
-  before Phase 8/10 needs both to agree.
+- `Session.status` and `Report.status` are only kept in sync for the
+  `"signing"` transition (Phase 8's `maybeLockReport`, which sets both
+  together). Before that point they can still independently be `"waiting"`
+  vs `"joined"` etc. — the general sync strategy for the rest of the
+  lifecycle is still open, for Phase 10 (finalize/seal) to decide.
 - `GET /api/reports?deviceId=` is accepted but a no-op — `Report`/`Session`
   schemas (§5.1) have no `deviceId` field. `?plate=` works.

@@ -81,12 +81,18 @@ class SocketClient {
   final _sessionStateController = StreamController<SessionStateEvent>.broadcast();
   final _partyStatusController = StreamController<PartyStatusEvent>.broadcast();
   final _reportPatchedController = StreamController<ReportPatchedEvent>.broadcast();
+  final _reportLockedController = StreamController<void>.broadcast();
   final _errorController = StreamController<SessionErrorEvent>.broadcast();
 
   Stream<SocketConnectionState> get connectionState => _connectionStateController.stream;
   Stream<SessionStateEvent> get sessionState => _sessionStateController.stream;
   Stream<PartyStatusEvent> get partyStatus => _partyStatusController.stream;
   Stream<ReportPatchedEvent> get reportPatched => _reportPatchedController.stream;
+
+  /// `report:locked` (docs/master_plan.md §5.3) — emitted once both parties
+  /// have confirmed review and signed (Phase 8). No payload; screens react
+  /// by re-reading `SessionController.isLocked`.
+  Stream<void> get reportLocked => _reportLockedController.stream;
   Stream<SessionErrorEvent> get errors => _errorController.stream;
 
   /// Connects to [baseUrl] and joins [sessionId] as [party] ('A' or 'B').
@@ -130,6 +136,7 @@ class SocketClient {
     socket.on('report:patched', (data) {
       _reportPatchedController.add(ReportPatchedEvent.fromJson((data as Map).cast<String, dynamic>()));
     });
+    socket.on('report:locked', (_) => _reportLockedController.add(null));
     socket.on('session:error', (data) {
       _errorController.add(SessionErrorEvent.fromJson((data as Map).cast<String, dynamic>()));
     });
@@ -164,6 +171,7 @@ class SocketClient {
     _sessionStateController.close();
     _partyStatusController.close();
     _reportPatchedController.close();
+    _reportLockedController.close();
     _errorController.close();
   }
 }

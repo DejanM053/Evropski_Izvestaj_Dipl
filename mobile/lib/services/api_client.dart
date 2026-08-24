@@ -184,4 +184,33 @@ class ApiClient {
       throw ApiException.fromDioException(e);
     }
   }
+
+  /// `POST /api/reports/:id/signature` — single PNG per party (docs/master_plan.md
+  /// §5.2/§6 screen 11). The server broadcasts the resulting `{fileId,
+  /// signedAt}` back over `report:patched` (path `partyX.signature`) so the
+  /// caller doesn't need to separately sync local state — see
+  /// `backend/src/routes/uploads.js`'s `broadcastPatch`.
+  Future<UploadResult> uploadSignature({
+    required String reportId,
+    required Uint8List bytes,
+    required String party,
+    ValueChanged<double>? onProgress,
+  }) async {
+    try {
+      final form = FormData.fromMap({
+        'party': party,
+        'file': MultipartFile.fromBytes(bytes, filename: 'signature.png'),
+      });
+      final res = await _dio.post<Map<String, dynamic>>(
+        '/api/reports/${Uri.encodeComponent(reportId)}/signature',
+        data: form,
+        onSendProgress: (sent, total) {
+          if (total > 0) onProgress?.call(sent / total);
+        },
+      );
+      return UploadResult.fromJson(res.data!);
+    } on DioException catch (e) {
+      throw ApiException.fromDioException(e);
+    }
+  }
 }

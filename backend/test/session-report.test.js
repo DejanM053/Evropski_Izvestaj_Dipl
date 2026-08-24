@@ -227,5 +227,40 @@ describe("Session + Report data layer and real-time sync", () => {
 
       expect(error.code).toBe("REPORT_SEALED");
     });
+
+    it("locks the report once both parties have confirmed review and signed, emitting report:locked", async () => {
+      // Signatures are uploaded via REST in real usage (uploads.js), but the
+      // lock condition only cares about the persisted fields, so setting
+      // them directly here keeps this test focused on the socket-side half
+      // of the trigger (confirmedReview).
+      await Report.findByIdAndUpdate(reportId, {
+        "partyA.signature.fileId": new mongoose.Types.ObjectId(),
+        "partyA.signature.signedAt": new Date(),
+        "partyB.signature.fileId": new mongoose.Types.ObjectId(),
+        "partyB.signature.signedAt": new Date(),
+      });
+
+      const patchedOnB = waitForEvent(socketB, "report:patched");
+      socketA.emit("report:patch", { path: "partyA.confirmedReview", value: true });
+      await patchedOnB;
+
+      // Not locked yet — only one party has confirmed.
+      expect((await Report.findById(reportId)).status).not.toBe("signing");
+
+      const lockedOnA = waitForEvent(socketA, "report:locked");
+      const lockedOnB = waitForEvent(socketB, "report:locked");
+      socketB.emit("report:patch", { path: "partyB.confirmedReview", value: true });
+      await Promise.all([lockedOnA, lockedOnB]);
+
+      const report = await Report.findById(reportId);
+      expect(report.status).toBe("signing");
+      const session = await Session.findById(sessionId);
+      expect(session.status).toBe("signing");
+
+      const errorOnA = waitForEvent(socketA, "session:error");
+      socketA.emit("report:patch", { path: "partyA.vehicle.plate", value: "TOO-LATE" });
+      const error = await errorOnA;
+      expect(error.code).toBe("SESSION_LOCKED");
+    });
   });
 });

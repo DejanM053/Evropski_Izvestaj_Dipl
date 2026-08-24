@@ -2,7 +2,7 @@
 
 ## Current phase
 
-Phase 8 — Screens 10–11 (review + signatures)
+Phase 9 — PDF generation
 
 ## Phases (from master_plan.md §8)
 
@@ -14,7 +14,7 @@ Phase 8 — Screens 10–11 (review + signatures)
 - [x] Phase 5 — Design system → Flutter theme + widgets
 - [x] Phase 6 — Screens 1–4 (session pairing)
 - [x] Phase 7 — Screens 5–9 (form, circumstances, sketch, photos)
-- [ ] Phase 8 — Screens 10–11 (review + signatures)
+- [x] Phase 8 — Screens 10–11 (review + signatures)
 - [ ] Phase 9 — PDF generation
 - [ ] Phase 10 — Finalize + anchor + screens 12–13
 - [ ] Phase 11 — Verify endpoint + screens 14–15
@@ -489,14 +489,128 @@ Phase 8 — Screens 10–11 (review + signatures)
       bugs. The emulator remains an option for the user's own testing but
       is no longer assumed reliable enough for the agent to drive.
 
+- **Phase 8** — review, signing, and locking (docs/master_plan.md §5.1/§5.3,
+  §6 screens 10–11).
+  - **Review confirmation reuses the existing generic patch mechanism** —
+    `ReviewStep`'s "Potvrđujem da su podaci tačni" button sends
+    `report:patch` with path `partyX.confirmedReview`/`value: true`, no new
+    endpoint or event needed since `confirmedReview` already lives under
+    the caller's own `partyA`/`partyB` subtree (`.claude/rules/backend.md`'s
+    existing own-subtree rule). The same broadcast that persists it also
+    gives the other party's confirmation state live — that requirement
+    fell out of the existing contract for free.
+  - **Locking is a new `report-lock.service.js`** (`maybeLockReport(report,
+    session, io)`): once both parties have `confirmedReview` **and** a
+    stored `signature.fileId`, it sets **both** `Report.status` and
+    `Session.status` to `"signing"` together and emits `report:locked` —
+    resolving the "Session.status and Report.status aren't kept in sync"
+    gap noted in `.claude/rules/backend.md`, at least for this one
+    transition (the rest of the status lifecycle is still Phase
+    9/10/11 work). Idempotent (a no-op once already at or past `"signing"`),
+    so it's called after *every* accepted `report:patch` in
+    `session.socket.js` (cheap; simpler than filtering to just
+    `confirmedReview` paths) and again after a signature REST upload in
+    `uploads.js` (the one write path the socket handler never sees).
+  - **The sealed-report guard now covers the whole locked range, not just
+    `"sealed"`.** `report-guard.service.js`'s `assertReportNotSealed`/
+    `requireUnsealedReport` used to only check `status === "sealed"` (true
+    of every write route before this phase, since nothing ever set any
+    other locked status). It now also rejects `"signing"`/`"finalizing"`/
+    `"abandoned"` via a new `ReportLockedError` (code `REPORT_LOCKED`),
+    kept distinct from the existing `SealedReportError`/`REPORT_SEALED` so
+    a caller/test can still tell "permanently sealed" apart from
+    "temporarily locked, signing/finalizing in flight." This is what makes
+    "every patch and every upload" actually true from the moment of
+    locking — the socket path was already covered by the session-level
+    `LOCKED_STATUSES` check, but the REST upload routes (photos/sketch/
+    signature) had no equivalent until now.
+  - **Signature upload broadcasts itself instead of the client re-patching
+    it.** `POST /api/reports/:id/signature` now emits a server-originated
+    `report:patched` (`{path: "partyX.signature", value: {fileId,
+    signedAt}, by: party}`) right after persisting — reusing the exact
+    `{path, value, by}` contract clients already handle for
+    socket-originated patches, rather than inventing a new event type or
+    having the mobile client fire a redundant `report:patch` after its own
+    REST upload (which would have double-written the same value). Both the
+    uploader's own screen and the other party's get the update live, the
+    same way `sketch.fileId` already worked in Phase 7 — except here the
+    server is the one broadcasting, since the REST route (not a client
+    patch) is the actual write.
+  - **This closed the "photos aren't live-synced" known issue below, as a
+    side effect of the same mechanism.** `classifyPatchPath` in
+    `session.socket.js` still rejects a *client*-initiated `report:patch`
+    to `photos` (that restriction is about validating untrusted client
+    input against last-write-wins array replace being unsafe for an
+    additive list — still true). But nothing stops the *server* from
+    broadcasting `report:patched` with path `"photos"` after its own
+    atomic, already-persisted array push/filter — so `POST
+    /api/reports/:id/photos` and `DELETE
+    /api/reports/:id/photos/:fileId` now do exactly that
+    (`broadcastPatch` helper in `uploads.js`). Needed for Review's "full
+    assembled report from both sides" to actually be both sides without
+    requiring a reconnect first, exactly the gap the note below used to
+    describe. `photos_step.dart`'s own local-optimistic-list/dedupe-by-
+    fileId logic (Phase 7) needed no changes — it already treats "the
+    fileId is in the remote list" as the signal to drop its own optimistic
+    entry, which now just happens sooner (on broadcast) instead of only on
+    reconnect.
+  - **`app.set("io", io)`** in `app.js` so REST routes can reach the same
+    Socket.IO server the socket handlers use, without each route module
+    importing/constructing its own — needed for `uploads.js`'s new
+    broadcasts and lock check.
+  - **Client-side locking is one flag, one overlay, not per-field
+    plumbing.** `SessionController.isLocked` is derived two ways: from a
+    `session:state`/reconnect snapshot whose `status` is already in a new
+    `kLockedSessionStatuses` set (mirrors backend `LOCKED_STATUSES`), or
+    set immediately by a live `report:locked` event (no payload).
+    `SessionShellScreen` wraps its entire step `IndexedStack` (all 7 steps,
+    not just Review/Signature) in one `IgnorePointer(ignoring: isLocked)` +
+    dimmed `Opacity`, plus a `_LockedBanner` — rather than threading an
+    `enabled`/`isLocked` prop through every `PatchTextField`/
+    `PatchToggleRow`/button on every step screen. Verified this actually
+    covers the earlier screens too (accident details, my details,
+    circumstances, sketch, photos), not just Review/Signature, since the
+    gate lives above all of them in the widget tree. One rough edge this
+    surfaces: a step's own "next" button lives inside the same ignored
+    region, so a party sitting on an earlier step when the report locks
+    (e.g. they went back to double-check something while the other side
+    finished signing) would otherwise have no way forward — handled with a
+    one-time `_maybeJumpToReviewOnLock` that jumps to the Review step the
+    first time `isLocked` flips true while `_stepIndex` is behind it, so
+    the locked state is always visible at that same well-known screen for
+    both parties, but doesn't fight a deliberate back-navigation
+    afterward.
+  - **Signature screen uses the `signature` pub package (v6.4.0)** rather
+    than a hand-rolled `CustomPainter` like the sketch step — its own
+    canvas already ships `clear()`/`undo()`/`redo()`/`canUndo`/`canRedo`,
+    which is exactly "clear/redo" from §6 screen 11. Export
+    (`toPngBytes(width:, height:)`) is pinned to a fixed 600×300 canvas
+    regardless of how much of the pad was actually inked, rather than the
+    package's default tightly-cropped-to-strokes size — every signature
+    PNG ends up the same shape, simpler for the eventual PDF layout (§5.6)
+    than a variably-sized image. `AppFontFamily.signature`/
+    `AppTypography.signatureLarge` (Caveat) were already reserved back in
+    Phase 5 for a decorative preview only, never the real capture — no
+    change needed there.
+  - Own signature state (`selfSigned`) and the bottom-bar submit button
+    read straight off `SessionController.report`, which updates itself via
+    the broadcast above — no manual local-state patch needed after a
+    successful upload, unlike the sketch step's explicit
+    `sendPatch('sketch.fileId', ...)` (Phase 7 pattern, kept as-is there
+    since that upload genuinely is client-initiated all the way through).
+  - Added integration test coverage in `backend/test/session-report.test.js`
+    (confirmedReview-driven lock via sockets, `SESSION_LOCKED` on a patch
+    attempted after) and `backend/test/uploads.test.js` (signature-driven
+    lock via REST, `REPORT_LOCKED` on an upload attempted after, and both
+    new `report:patched` broadcasts — signature and photos). Rebuilt and
+    recreated the `backend` container (`docker compose build backend` +
+    `up -d --no-deps backend`, same non-`--build` care as prior phases) so
+    the running stack matches this code; did not drive the mobile UI
+    end-to-end (the user is testing that themselves this round, per their
+    own request).
+
 ## Known issues
 
 - `GET /api/reports?deviceId=` doesn't filter — no `deviceId` field exists
   anywhere in §5.1's schemas yet. Needs a schema decision before the mobile
   client's local-deviceId history scoping (§6 client rules) can work.
-- Photos aren't live-synced between parties (no socket broadcast on
-  upload/delete — see Phase 7 decisions above for why). Each party sees
-  their own photos immediately; the other party only sees them after a
-  reconnect. Not a blocker for the Phase 7 "done when," but worth fixing
-  with a dedicated broadcast event before the Review screen (Phase 8)
-  needs to show both parties' photos without requiring a reconnect first.

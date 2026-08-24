@@ -24,6 +24,7 @@ class SessionController extends ChangeNotifier {
     _sessionStateSub = _socket.sessionState.listen(_onSessionState);
     _partyStatusSub = _socket.partyStatus.listen(_onPartyStatus);
     _reportPatchedSub = _socket.reportPatched.listen(_onReportPatched);
+    _reportLockedSub = _socket.reportLocked.listen((_) => _onReportLocked());
     _errorSub = _socket.errors.listen(_onError);
     _socket.connect(sessionId: sessionId, party: selfParty);
   }
@@ -40,6 +41,7 @@ class SessionController extends ChangeNotifier {
   late final StreamSubscription<SessionStateEvent> _sessionStateSub;
   late final StreamSubscription<PartyStatusEvent> _partyStatusSub;
   late final StreamSubscription<ReportPatchedEvent> _reportPatchedSub;
+  late final StreamSubscription<void> _reportLockedSub;
   late final StreamSubscription<SessionErrorEvent> _errorSub;
 
   SocketConnectionState connectionState = SocketConnectionState.connecting;
@@ -49,6 +51,14 @@ class SessionController extends ChangeNotifier {
   String? otherPartyStage;
   bool otherPartyReady = false;
   SessionErrorEvent? lastError;
+
+  /// True once the report can no longer be edited — either derived from a
+  /// `session:state` snapshot whose status is already `signing` or later
+  /// (§5.3 `LOCKED_STATUSES`, e.g. after a reconnect), or set immediately by
+  /// a live `report:locked` event (Phase 8: both parties confirmed review
+  /// and signed). Screens use this single flag to hide/disable every edit
+  /// affordance — see `SessionShellScreen`'s read-only overlay.
+  bool isLocked = false;
 
   /// The most recent applied `report:patched` event, exposed so screens can
   /// tell *which* field just changed (e.g. to skip re-syncing a field the
@@ -69,6 +79,14 @@ class SessionController extends ChangeNotifier {
     if (event.session.partyFor(otherParty).isConnected) {
       otherPartyConnected = true;
     }
+    if (kLockedSessionStatuses.contains(event.session.status)) {
+      isLocked = true;
+    }
+    notifyListeners();
+  }
+
+  void _onReportLocked() {
+    isLocked = true;
     notifyListeners();
   }
 
@@ -108,6 +126,7 @@ class SessionController extends ChangeNotifier {
     _sessionStateSub.cancel();
     _partyStatusSub.cancel();
     _reportPatchedSub.cancel();
+    _reportLockedSub.cancel();
     _errorSub.cancel();
     _socket.dispose();
     super.dispose();
