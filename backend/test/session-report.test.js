@@ -262,5 +262,56 @@ describe("Session + Report data layer and real-time sync", () => {
       const error = await errorOnA;
       expect(error.code).toBe("SESSION_LOCKED");
     });
+
+    it("freezes a party's own subtree the instant they sign, before the other party has", async () => {
+      await Report.findByIdAndUpdate(reportId, {
+        "partyA.confirmedReview": true,
+        "partyA.signature.fileId": new mongoose.Types.ObjectId(),
+        "partyA.signature.signedAt": new Date(),
+      });
+
+      // Report/session aren't locked yet (only A has signed off) — this is
+      // a per-party freeze, distinct from the full-report SESSION_LOCKED
+      // case above.
+      const errorOnA = waitForEvent(socketA, "session:error");
+      socketA.emit("report:patch", { path: "partyA.vehicle.plate", value: "TOO-LATE" });
+      const error = await errorOnA;
+      expect(error.code).toBe("PARTY_LOCKED");
+
+      const report = await Report.findById(reportId);
+      expect(report.partyA.vehicle.plate).toBeUndefined();
+      const session = await Session.findById(sessionId);
+      expect(session.status).not.toBe("signing");
+    });
+
+    it("still allows the not-yet-signed party to patch their own subtree", async () => {
+      await Report.findByIdAndUpdate(reportId, {
+        "partyA.confirmedReview": true,
+        "partyA.signature.fileId": new mongoose.Types.ObjectId(),
+        "partyA.signature.signedAt": new Date(),
+      });
+
+      const patchedOnA = waitForEvent(socketA, "report:patched");
+      socketB.emit("report:patch", { path: "partyB.vehicle.plate", value: "STILL-OK" });
+      await patchedOnA;
+
+      const report = await Report.findById(reportId);
+      expect(report.partyB.vehicle.plate).toBe("STILL-OK");
+    });
+
+    it("still allows editing shared subtrees after one party has signed", async () => {
+      await Report.findByIdAndUpdate(reportId, {
+        "partyA.confirmedReview": true,
+        "partyA.signature.fileId": new mongoose.Types.ObjectId(),
+        "partyA.signature.signedAt": new Date(),
+      });
+
+      const patchedOnB = waitForEvent(socketB, "report:patched");
+      socketA.emit("report:patch", { path: "accident.location.address", value: "Still editable" });
+      await patchedOnB;
+
+      const report = await Report.findById(reportId);
+      expect(report.accident.location.address).toBe("Still editable");
+    });
   });
 });

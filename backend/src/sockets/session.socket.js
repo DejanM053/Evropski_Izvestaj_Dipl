@@ -6,7 +6,7 @@ const {
   SealedReportError,
   ReportLockedError,
 } = require("../services/report-guard.service");
-const { maybeLockReport } = require("../services/report-lock.service");
+const { maybeLockReport, partySignedOff } = require("../services/report-lock.service");
 
 function emitError(socket, code, message) {
   socket.emit("session:error", { code, message });
@@ -84,6 +84,23 @@ function registerSessionHandlers(io) {
         const report = await Report.findById(session.reportId);
         if (!report) return emitError(socket, "REPORT_NOT_FOUND", "report not found");
         assertReportNotSealed(report);
+
+        // A party's own subtree freezes the instant *they've* signed off
+        // (confirmedReview + a stored signature), rather than waiting for
+        // the other party too — narrows the "confirm/sign, then quietly
+        // edit before the other party finishes" window discussed with the
+        // user. Shared subtrees (accident.*/sketch) deliberately stay open
+        // until the whole report locks (maybeLockReport, both parties) —
+        // they're joint by design, and freezing them on one party's
+        // signature would block the other party's own legitimate edits
+        // before they've even reviewed/signed.
+        if (classification.scope === "party" && partySignedOff(report, classification.party)) {
+          return emitError(
+            socket,
+            "PARTY_LOCKED",
+            `party ${classification.party} has already signed and cannot edit further`
+          );
+        }
 
         report.set(path, value);
         await report.save();

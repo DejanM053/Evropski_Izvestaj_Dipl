@@ -26,7 +26,7 @@ call wires everything.
 | S→C | `report:locked` | — (no payload) | Phase 8: emitted by `report-lock.service.js`'s `maybeLockReport` once both parties have `confirmedReview` **and** a stored `signature.fileId`. Checked after every accepted `report:patch` (`session.socket.js`) and after every signature REST upload (`uploads.js`, the one write path the socket handler never sees). Idempotent — a no-op once `report.status` is already at or past `"signing"`. |
 | S→C | `report:progress` | `{step, status, error?, txHash?, skipped?}` | Phase 10: emitted by `finalize.service.js`'s `runFinalize` at the start (`status: "active"`) and end (`"done"`/`"error"`) of each §5.4 pipeline step. `step` is one of `validate`/`lock`/`pdf`/`hash`/`store`/`attachments`/`bundle`/`derive`/`anchor`/`seal` — an opaque key, same convention as `party:ready`'s `stage`: the server never sends a display label, clients own their own copy of what each key means. On an anchor-only retry (see below), the already-durable steps (`lock` through `bundle`) are replayed as instantly-`"done"` events with `skipped: true` rather than staying silent, so a client that only tracks what it's seen over the socket doesn't render them as stuck pending. |
 | S→C | `report:sealed` | `{pdfFileId, txHash, blockNumber, contractAddress, network, anchoredAt}` | Phase 10. Extends the minimal shape in docs/master_plan.md §5.3 (`{pdfFileId, txHash, blockNumber}`) with the rest of the `chain` record, so **every** connected client — not just whichever one's own `POST /finalize` happened to complete the pipeline — can render the full sealed state without a follow-up REST call. Broadcast to the whole room once, from `runFinalize`'s step 10. |
-| S→C | `session:error` | `{code, message}` | Emitted to the offending socket only (never broadcast). Known codes: `INVALID_PARTY`, `SESSION_NOT_FOUND`, `NOT_JOINED`, `INVALID_PATCH`, `FORBIDDEN_PATCH`, `SESSION_LOCKED`, `REPORT_NOT_FOUND`, `REPORT_SEALED`, `REPORT_LOCKED`, `INTERNAL_ERROR`. |
+| S→C | `session:error` | `{code, message}` | Emitted to the offending socket only (never broadcast). Known codes: `INVALID_PARTY`, `SESSION_NOT_FOUND`, `NOT_JOINED`, `INVALID_PATCH`, `FORBIDDEN_PATCH`, `SESSION_LOCKED`, `REPORT_NOT_FOUND`, `REPORT_SEALED`, `REPORT_LOCKED`, `PARTY_LOCKED`, `INTERNAL_ERROR`. |
 
 Two REST routes also broadcast `report:patched` themselves (`uploads.js`'s
 `broadcastPatch` helper), reusing the same `{path, value, by}` shape a
@@ -62,6 +62,29 @@ One guard, two call sites — both defined in `src/services/report-guard.service
   directly inside `report:patch`.
 - `requireUnsealedReport` — Express middleware wrapping the same assertion,
   used by every mutating REST route (photos/sketch/signature) since Phase 7/8.
+
+**Per-party freeze** (post-Phase-12 hardening, `report-lock.service.js`'s
+`partySignedOff(report, party)`): once *one* party has both
+`confirmedReview` and a stored `signature.fileId`, `report:patch` rejects
+any further patch into *that party's own* subtree with a new `PARTY_LOCKED`
+error — independent of `bothPartiesSignedOff`/`maybeLockReport`, which
+still waits for both. This narrows the window between "what a party
+confirmed/signed" and "what actually ends up in the finalized PDF" without
+needing the other party to also be done. Deliberately scoped: only
+`partyA.*`/`partyB.*` patches are affected (checked in `report:patch`
+right after `assertReportNotSealed`, and again in `uploads.js`'s signature
+route so a party can't sidestep the field-patch freeze by re-uploading a
+different signature image); shared subtrees (`accident.*`/`sketch`) stay
+open until the whole report locks via `maybeLockReport`, since they're
+explicitly joint and freezing them on one party's signature would block
+the other party's own legitimate edits before they've even reviewed/signed.
+Not a fix for the underlying "oracle problem" (the backend/live-session
+data entry is still a trusted process, not a cryptographic one) — just a
+narrower, cheaper-to-defend TOCTOU window between self-confirmation and
+finalize. Client-side needed no change: `session_shell_screen.dart`'s
+existing `_maybeShowError` already surfaces any `session:error.message` in
+a SnackBar generically, so `PARTY_LOCKED` is covered by the same mechanism
+every other error code already uses.
 
 Separately, `report:patch` also rejects when `session.status` is in
 `LOCKED_STATUSES` (`signing`, `finalizing`, `sealed`, `abandoned` — see

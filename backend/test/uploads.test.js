@@ -245,6 +245,29 @@ describe("File uploads (GridFS + hashing)", () => {
       expect(report.partyB.signature.fileId).toBeNull();
     });
 
+    it("rejects a re-sign once that party has already confirmed review and signed", async () => {
+      const first = await request(app)
+        .post(`/api/reports/${reportId}/signature`)
+        .field("party", "A")
+        .attach("file", PNG_BYTES, { filename: "sig.png", contentType: "image/png" });
+      expect(first.status).toBe(201);
+
+      // Signature alone isn't enough to freeze — confirmedReview also has
+      // to be true (matches partySignedOff / the socket-side freeze).
+      await Report.findByIdAndUpdate(reportId, { "partyA.confirmedReview": true });
+
+      const second = await request(app)
+        .post(`/api/reports/${reportId}/signature`)
+        .field("party", "A")
+        .attach("file", PNG_BYTES, { filename: "sig2.png", contentType: "image/png" });
+
+      expect(second.status).toBe(409);
+      expect(second.body.code).toBe("PARTY_LOCKED");
+
+      const report = await Report.findById(reportId);
+      expect(report.partyA.signature.fileId.toString()).toBe(first.body.fileId);
+    });
+
     it("broadcasts the signature via report:patched to the session room", async () => {
       const session = await Session.create({
         sessionCode: "SIGSYN",

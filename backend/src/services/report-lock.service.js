@@ -1,12 +1,20 @@
 const { LOCKED_STATUSES } = require("../models/statuses");
 
+// One party's own half of the "signed off" condition — confirmed review
+// *and* a stored signature. Used both to compute bothPartiesSignedOff
+// below and, since this phase, to freeze a party's own subtree the
+// instant *they* sign rather than waiting for the other party too (see
+// session.socket.js's report:patch handler and uploads.js's signature
+// route) — narrowing the window between "what a party signed off on" and
+// "what actually ends up in the finalized report" without needing both
+// parties to be done.
+function partySignedOff(report, party) {
+  const partyKey = party === "A" ? "partyA" : "partyB";
+  return Boolean(report[partyKey].confirmedReview && report[partyKey].signature.fileId);
+}
+
 function bothPartiesSignedOff(report) {
-  return Boolean(
-    report.partyA.confirmedReview &&
-      report.partyB.confirmedReview &&
-      report.partyA.signature.fileId &&
-      report.partyB.signature.fileId
-  );
+  return partySignedOff(report, "A") && partySignedOff(report, "B");
 }
 
 // §5.4 step 1 / Phase 8: once both parties have confirmed review and
@@ -39,4 +47,4 @@ async function maybeLockReport(report, session, io) {
   return true;
 }
 
-module.exports = { maybeLockReport, bothPartiesSignedOff };
+module.exports = { maybeLockReport, bothPartiesSignedOff, partySignedOff };

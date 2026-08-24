@@ -13,19 +13,9 @@ import '../models/report_model.dart';
 import '../services/api_client.dart';
 import '../state/session_controller.dart';
 import '../theme/theme.dart';
+import '../utils/block_explorer.dart';
 import '../widgets/widgets.dart';
 import 'verify_screen.dart';
-
-/// Public-testnet block explorers this app knows how to link to (Phase 12
-/// only wires up Sepolia in hardhat.config.js — see PROGRESS.md — but Amoy
-/// is kept here too since master_plan.md §2 allows either). Anything not in
-/// this map (e.g. "localhost"/"hardhat" during dev) gets no explorer link,
-/// satisfying "when CHAIN_NETWORK is a public testnet".
-const _kExplorerTxBaseUrls = {
-  'sepolia': 'https://sepolia.etherscan.io/tx/',
-  'amoy': 'https://amoy.polygonscan.com/tx/',
-  'polygon-amoy': 'https://amoy.polygonscan.com/tx/',
-};
 
 /// Screen 13 (docs/master_plan.md §6 / design "1l", "Izveštaj zapečaćen") —
 /// the terminal screen once `report.status == 'sealed'`. PDF open/share both
@@ -155,8 +145,7 @@ class _ReportCompleteScreenState extends State<ReportCompleteScreen> {
     final chain = report.chain;
     final partyLabel = '${_partyLabel(report.partyA, 'Vozač A')} ↔ ${_partyLabel(report.partyB, 'Vozač B')}';
     final shortId = '#${report.id.length >= 6 ? report.id.substring(report.id.length - 6).toUpperCase() : report.id}';
-    final explorerBase = chain.network != null ? _kExplorerTxBaseUrls[chain.network!.toLowerCase()] : null;
-    final explorerUrl = (explorerBase != null && chain.txHash != null) ? '$explorerBase${chain.txHash}' : null;
+    final explorerUrl = explorerTxUrl(chain.network, chain.txHash);
 
     return Scaffold(
       backgroundColor: AppColors.paper,

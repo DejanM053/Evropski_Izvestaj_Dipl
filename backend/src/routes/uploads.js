@@ -5,7 +5,7 @@ const Session = require("../models/Session");
 const { requireUnsealedReport } = require("../services/report-guard.service");
 const storage = require("../services/storage.service");
 const { sha256 } = require("../services/hash.service");
-const { maybeLockReport } = require("../services/report-lock.service");
+const { maybeLockReport, partySignedOff } = require("../services/report-lock.service");
 
 const router = express.Router();
 
@@ -185,6 +185,18 @@ router.post(
       }
 
       const report = req.report;
+
+      // Once a party has already signed off (confirmedReview + a stored
+      // signature), block re-uploading a *different* signature over it —
+      // otherwise the freeze added to report:patch above could be sidestepped
+      // by quietly re-signing instead of quietly re-patching a field.
+      if (partySignedOff(report, party)) {
+        return res.status(409).json({
+          error: `party ${party} has already signed and cannot re-sign`,
+          code: "PARTY_LOCKED",
+        });
+      }
+
       const partyKey = party === "A" ? "partyA" : "partyB";
       const hash = sha256(req.file.buffer);
       const previousFileId = report[partyKey].signature.fileId;

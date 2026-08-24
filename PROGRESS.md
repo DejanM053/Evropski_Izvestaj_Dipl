@@ -2,7 +2,15 @@
 
 ## Current phase
 
-Phase 12 — Testnet deploy + README + demo script
+**Feature-complete.** All 12 phases from master_plan.md §8 are done. Phase
+12 (testnet deploy + README + demo script + acceptance-checklist
+walkthrough) is the last one — see its Decisions entry below for the full
+Sepolia anchor/tamper/verify run and the item-by-item acceptance checklist.
+One item on that checklist (the live two-device end-to-end run) is an
+explicitly documented gap for *this phase specifically* — it was already
+demonstrated for real in Phases 6–11's own live testing sessions, just not
+re-run in Phase 12 per that phase's own instructions (no live demo this
+round). See "Known issues" below.
 
 Phase 11 is done, confirmed both ways: first against the backend alone
 (throwaway report, real Hardhat anchor, `scripts/tamper.js`, re-verify
@@ -26,7 +34,7 @@ untouched as a control. See Decisions below for both passes.
 - [x] Phase 9 — PDF generation
 - [x] Phase 10 — Finalize + anchor + screens 12–13
 - [x] Phase 11 — Verify endpoint + screens 14–15
-- [ ] Phase 12 — Testnet deploy + README + demo script
+- [x] Phase 12 — Testnet deploy + README + demo script
 
 ## Decisions
 
@@ -1098,3 +1106,279 @@ untouched as a control. See Decisions below for both passes.
     report was left untouched as a control and was not re-verified in this
     pass, but has no reason to differ from the backend-only VERIFIED case
     above.
+
+- **Phase 12** — testnet deploy, README rewrite, demo script, acceptance
+  checklist. No live two-device demo this phase, per the task's own
+  instruction — everything below is backend scripts/API calls plus
+  documentation review.
+  - **Sepolia signer wallet**: a dedicated wallet was generated ahead of
+    this phase specifically to sign Sepolia transactions, address
+    `0x05915d206Db0FeceFd7874d5811c4585afeCca86`, funded via the
+    [Google Cloud Web3 Sepolia faucet](https://cloud.google.com/application/web3/faucet/ethereum/sepolia).
+    Its private key was read from a local secrets file
+    (`~/.accident-report-secrets/sepolia-wallet.env.local`, outside the
+    repo, gitignored-equivalent by location) and merged into `.env` via a
+    shell command that piped the value directly file-to-file — never
+    echoed to any tool output or chat message, matching how the existing
+    local Hardhat key is already handled.
+  - **Deployed `AccidentRegistry` to Sepolia**:
+    `npx hardhat run scripts/deploy.js --network sepolia` (existing
+    `sepolia` network entry in `hardhat.config.js`, reading
+    `RPC_URL`/`PRIVATE_KEY` from env — no config change needed). Address
+    `0xF64198F2765cA34B52370948F74F0959573C9F6F`, RPC
+    `https://ethereum-sepolia-rpc.publicnode.com` (the first candidate from
+    the task's fallback list — worked on the first try, no need to fall
+    back to `rpc.sepolia.org`/`sepolia.drpc.org`). `.env` updated:
+    `CONTRACT_ADDRESS`/`CHAIN_NETWORK=sepolia`; `backend/src/abi/AccidentRegistry.json`
+    regenerated with the same ABI (contract source unchanged) and the new
+    address (that `address` field is purely informational — only `abi` is
+    ever read by `chain.service.js` — but it's git-tracked, so it briefly
+    showed as modified until the later local-redeploy step below
+    regenerated it back to the local address; see the clean-clone item).
+  - **Confirmed `CHAIN_NETWORK` is genuinely just a label with no code
+    branching on it anywhere**: read `chain.service.js` end to end — the
+    `ethers` provider/contract/wallet are built purely from
+    `RPC_URL`/`CONTRACT_ADDRESS`/`PRIVATE_KEY`, no `if (network ===
+    ...)` anywhere in the backend. Confirmed this in practice too: the same
+    running `backend` container was pointed at `localhost` and then at
+    `sepolia` (and back) with nothing but an `.env` edit + `docker compose
+    up -d backend` between them — no rebuild, no other file touched.
+  - **Mobile block-explorer link extended to `VerifyScreen`**
+    (`mobile/lib/screens/verify_screen.dart`'s `_ChainDetailsCard`), which
+    had none before this phase — only `ReportCompleteScreen` (Phase 10) had
+    one. Rather than duplicate `ReportCompleteScreen`'s private
+    `_kExplorerTxBaseUrls` map/`_openExplorer` method, extracted a shared
+    `mobile/lib/utils/block_explorer.dart` (`kExplorerTxBaseUrls`,
+    `explorerTxUrl(network, txHash)`) and pointed both screens at it — two
+    call sites reading the same map is exactly the "reuse, don't duplicate"
+    threshold. `flutter analyze` clean after the change.
+  - **`backend/scripts/tamper.js` needs to run *inside* the backend
+    container against a live stack, not from the host — a real operational
+    finding, not documented before this phase.** `config.MONGO_URI` in
+    `.env` is the `mongo` service hostname (`mongodb://mongo:27017/...`),
+    which only resolves inside the docker compose network. Confirmed by
+    direct testing: `cd backend && node scripts/tamper.js` fails
+    immediately (no `backend/.env` for `dotenv` to find — the required-vars
+    check in `config.js` fires first); `node backend/scripts/tamper.js`
+    from the repo root finds the root `.env` fine (Node resolves
+    `require("dotenv")` relative to `backend/scripts/`'s own
+    `node_modules`, walking up from the file being required, not from
+    `cwd`) but then fails with `getaddrinfo ENOTFOUND mongo` once it tries
+    to connect. The working invocation is `docker compose exec backend node
+    scripts/tamper.js <reportId>` — confirmed working against the real
+    Sepolia run below. Documented in the README's Sepolia section so this
+    doesn't have to be rediscovered next time.
+  - **Live Sepolia anchor + tamper/verify run**, same shape as
+    `backend/test/verify.test.js`'s `makeSealedReport()` and Phase 11's own
+    local live smoke test, but against the real Sepolia-configured backend
+    container instead of a mocked or local chain:
+    1. Recreated the `backend` container with the Sepolia `.env`
+       (`docker compose up -d backend`); `GET /api/health` →
+       `{"mongo":"ok","chain":"ok","contract":"0xF64198F2765cA34B52370948F74F0959573C9F6F","network":"sepolia"}`.
+    2. A temporary seed script (`backend/scripts/seed-throwaway-sepolia-demo.js`,
+       `docker cp`'d into the running container rather than baked in via a
+       rebuild, so the already-running Hardhat/Mongo state wasn't touched)
+       created a minimal `status: "signing"` report — both parties'
+       `confirmedReview: true` + a stored signature PNG each, one sketch
+       PNG, one photo PNG, all real GridFS blobs — then a Session pointing
+       at it. Report id `6a8c527a240dfd5810b2f623`.
+    3. `POST /api/reports/6a8c527a240dfd5810b2f623/finalize` against the
+       Sepolia-configured backend ran the real pipeline end to end,
+       including a genuine `anchor()` transaction: `status: "sealed"`,
+       `chain.txHash: 0xd8852329e6dea60ecf866e49b93e9c6e6601452f29daddca8208f384b3c2cf9e`,
+       `chain.blockNumber: 11557579`, `chain.contractAddress:
+       0xF64198F2765cA34B52370948F74F0959573C9F6F`, `chain.network:
+       sepolia`. Viewable at
+       `https://sepolia.etherscan.io/tx/0xd8852329e6dea60ecf866e49b93e9c6e6601452f29daddca8208f384b3c2cf9e`.
+    4. `GET /api/reports/6a8c527a240dfd5810b2f623/verify` →
+       `verdict: "VERIFIED"`, `pdf.match: true`,
+       `pdf.recomputedHash === pdf.onChainHash`, `bundle.match: true` — the
+       untouched-report half of the proof, now against a real public
+       chain instead of local Hardhat.
+    5. `docker compose exec backend node scripts/tamper.js
+       6a8c527a240dfd5810b2f623` flipped one byte of the stored PDF in
+       GridFS (report document's own `pdf.sha256` left untouched, per the
+       script's existing design).
+    6. Re-ran `GET /verify` → `verdict: "TAMPERED"`, `pdf.match: false`,
+       `pdf.storedHash === pdf.onChainHash` (proving the mismatch is caught
+       by the recomputed-vs-chain comparison, not a stale database field —
+       same distinction Phase 11 made locally), `bundle.match: true`
+       (only the PDF was touched, not an attachment) — the
+       VERIFIED→TAMPERED flip, now demonstrated against Sepolia.
+    7. Cleaned up afterward: deleted all 5 GridFS files (sketch, PDF, both
+       signatures, photo) via `storage.deleteFile`, then the `Report` and
+       `Session` documents themselves, then confirmed `GET
+       /api/reports/6a8c527a240dfd5810b2f623` → `404`. Deleted the
+       temporary seed script from both the running container and the repo
+       (it was a one-off verification helper, not a permanent tool like
+       `scripts/tamper.js` — nothing in the repo references it).
+    8. Switched `.env` back to the local Hardhat values (`RPC_URL`,
+       `CONTRACT_ADDRESS`, `PRIVATE_KEY`, `CHAIN_NETWORK=localhost`) and
+       recreated the `backend` container again so routine dev work isn't
+       left pointed at a public testnet.
+  - **"`docker compose up` brings the stack up from a clean clone" tested
+    directly**, not just read about: `git worktree add` at `HEAD` gave a
+    genuinely separate checkout with none of this session's uncommitted
+    changes. A first attempt used a `docker-compose.override.yml` with
+    different host ports to run the clean-clone stack alongside the
+    already-running dev stack — failed, because compose merges `ports:`
+    arrays across base+override files rather than replacing them, so the
+    base file's `27017:27017` mapping was still attempted and collided
+    with the already-running `mongo` container. Correct approach: stop the
+    main dev stack first (`docker compose down` — safe, no data depended on
+    surviving it), run the clean-clone worktree's stack on the normal
+    ports, confirm `docker compose up -d --build` + a fresh
+    `npx hardhat run scripts/deploy.js --network localhost` +
+    `docker compose up -d backend` reaches
+    `{"mongo":"ok","chain":"ok",...}` from nothing but a checkout and
+    `cp .env.example .env`, then tear the worktree stack down
+    (`docker compose down -v`) and remove the worktree. Brought the main
+    dev stack back up afterward and redeployed the contract to its
+    (now-reset, since stopping `hardhat` wipes its in-memory chain) local
+    node — same deterministic address as before
+    (`0x5FbDB2315678afecb367f032d93F642f64180aa3`, confirmed via `git
+    status` that this also restored `AccidentRegistry.json` to match the
+    committed version).
+  - **README.md rewritten in full**: project description, an architecture
+    diagram, prerequisites, setup from a clean clone (kept close to the
+    original but now cross-referenced against the fresh-worktree test
+    above), a full environment-variable reference table (including the
+    "no code change to switch networks" claim, now verified rather than
+    assumed), how to run all three services, how to run the mobile app
+    against each network configuration (emulator/USB device/Chrome — the
+    table clarifies `API_URL` depends on *how you reach the backend*, not
+    on which chain the backend is anchoring to), the Sepolia deploy
+    walkthrough (steps 0-3 of this task) including the
+    `tamper.js`-needs-the-container finding, the full test-command
+    reference for all three subsystems, and the eight-step demo script
+    from master_plan.md §9 with exact commands, explicitly marking which
+    steps were vs. weren't re-run this phase.
+
+## Acceptance checklist (master_plan.md §11) — walked item by item, Phase 12
+
+- [x] **No personal data is written on-chain.** Read
+  `blockchain/contracts/AccidentRegistry.sol` end to end: `Record` holds
+  only `pdfHash`, `bundleHash`, `timestamp`, and `submitter` (the backend's
+  own address, not a driver's identity); `anchor()`/`getRecord()`/`verify()`
+  take/return only `bytes32` hashes, a `reportId`, and a timestamp. Cross-
+  checked `chain.service.js`'s `anchorReport(reportId32, pdfHash32,
+  bundleHash32)` call site — nothing else is ever passed. No driver name,
+  plate, address, or any other PII crosses into a chain call anywhere in
+  the codebase.
+- [x] **Verification passes on an untouched report and fails on a tampered
+  one, identifying the affected file.** Demonstrated live against Sepolia
+  (Decisions above): `VERIFIED` → `scripts/tamper.js` → `TAMPERED`,
+  `pdf.match: false` naming the PDF specifically (a `--photo` run would
+  instead name that attachment's entry in `attachments`, as already proven
+  locally in Phase 11's "names the specific file" test and live run).
+- [x] **PDF is generated and matches the statement structure with photos,
+  sketch, and both signatures embedded.** Checked two ways: (1)
+  `backend/test/pdf.test.js`'s fully-filled-report case asserts an exact
+  page count against a report with real sketch/photo/signature attachments,
+  and separately exercises the empty-optional-fields, long-remarks, and
+  14-photo-pagination cases (Phase 9). (2) Downloaded a real sealed PDF
+  from this session's local Mongo (`GET
+  /api/files/6a8c417566cfead94c3c7ce9`, the PDF for already-sealed report
+  `6a8c412066cfead94c3c7cdd` from Phase 10's live run) and confirmed with
+  `file` that it's a valid 3-page PDF document.
+- [x] **PDF and every attachment have stored SHA-256 hashes.** Queried
+  Mongo directly for sealed reports from earlier live-testing phases (ids
+  `6a8c412066cfead94c3c7cdd`, `6a8c4846...99afa0`, `6a8c4964...99afb4`):
+  each has a non-null `pdf.sha256` and a 4-entry `attachmentHashes` array
+  (sketch + 2 signatures + 1 photo), each entry with its own `sha256`. Same
+  shape confirmed again on the throwaway Sepolia report before cleanup.
+- [x] **Hash + bundle hash are anchored on-chain with a retrievable tx
+  hash.** The Sepolia run above: tx
+  `0xd8852329e6dea60ecf866e49b93e9c6e6601452f29daddca8208f384b3c2cf9e`,
+  block `11557579`, contract `0xF64198F2765cA34B52370948F74F0959573C9F6F`,
+  publicly retrievable at
+  `https://sepolia.etherscan.io/tx/0xd8852329e6dea60ecf866e49b93e9c6e6601452f29daddca8208f384b3c2cf9e`
+  — a real public testnet, not just local Hardhat.
+- [x] **`docker compose up` brings the whole backend stack up from a clean
+  clone.** Demonstrated directly in a separate `git worktree` checkout with
+  none of this session's changes present (Decisions above) —
+  `docker compose up -d --build` → `mongo: ok`, `chain: error` (expected,
+  placeholder contract) → deploy → `docker compose up -d backend` →
+  `chain: ok`, matching the README's own documented sequence exactly.
+- [x] **README documents setup, env vars, deploy, and the demo script.**
+  This phase's rewrite (Decisions above) covers all four explicitly, plus
+  prerequisites, architecture, per-network mobile run commands, and the
+  full test-command reference, which the checklist item doesn't strictly
+  require but master_plan.md §0's "demonstrable" goal implies.
+- [ ] **An emulator (party A) and one USB-connected physical phone (party
+  B) complete a report end to end.** **Not demonstrated in Phase 12** — no
+  live two-device demo was in scope this phase, per the task's own explicit
+  instruction. Already demonstrated for real multiple times in earlier
+  phases' own live testing, cited here rather than re-run: Phase 6 (pairing
+  only), Phase 7 (form/circumstances/sketch/photos, phone + emulator, later
+  phone + Chrome after the emulator was dropped as unreliable on this
+  machine), Phase 8 (review/signing/locking, phone + Chrome), Phase 10
+  (finalize/anchor through screens 12-13, phone + Chrome, sealed report
+  `6a8c412066cfead94c3c7cdd`), and most completely Phase 11 (screens 14-15,
+  full pairing-through-verify run on phone + Chrome, two independently
+  sealed reports `6a8c4846...99afa0` and `6a8c4964...99afb4`, one of them
+  carried through the tamper/verify TAMPERED flow on the real Verify
+  screen). See "Known issues" below.
+
+- **Post-Phase-12 hardening: per-party freeze on sign**, prompted by a
+  defense-prep conversation about how far the "provably unaltered" claim
+  actually extends. The honest answer walked through with the user: the
+  chain anchor only proves the *sealed* report wasn't altered *after*
+  sealing — it says nothing about whether the report ever faithfully
+  reflected what the two drivers confirmed/signed *during* the live
+  session, since `confirmedReview` was just a boolean patch with no
+  binding to a specific data snapshot, and — because the report only
+  locked once *both* parties had confirmed+signed
+  (`report-lock.service.js`'s `bothPartiesSignedOff`) — a party who had
+  already confirmed and signed could still freely patch their own subtree
+  again while waiting on the other party. That's a real (if narrow, in
+  practice) TOCTOU gap between "what I signed" and "what got finalized,"
+  distinct from the general blockchain "oracle problem" (no system can
+  cryptographically prove *input* honesty, only detect *post-hoc* tampering
+  of whatever was recorded) — the oracle problem is inherent to any such
+  system and out of scope to "fix," but this specific gap was just this
+  implementation being more permissive than necessary.
+  - Added `partySignedOff(report, party)` to `report-lock.service.js`
+    (one party's half of `bothPartiesSignedOff`, which now just calls it
+    for both parties) and used it in two places: `session.socket.js`'s
+    `report:patch` handler rejects a patch into `partyA.*`/`partyB.*` with
+    a new `PARTY_LOCKED` error once *that* party has already confirmed
+    review and signed, even if the other party hasn't; `uploads.js`'s
+    signature route rejects a second signature upload from the same
+    already-signed party the same way (`409 PARTY_LOCKED`) — otherwise the
+    field-patch freeze could be sidestepped by just re-signing instead.
+  - **Deliberately scoped to structured party fields only** — confirmed
+    with the user before implementing: photos (party-attributed but not
+    part of the review screen's confirmed content) are explicitly *not*
+    frozen by this change; shared subtrees (`accident.*`/`sketch`) stay
+    open until the *whole* report locks (`maybeLockReport`, both parties),
+    since they're joint by design and freezing them on one party's
+    signature would block the other party's own legitimate edits before
+    they've even reviewed/signed themselves.
+  - **No mobile-side code change needed.** `session_shell_screen.dart`'s
+    existing `_maybeShowError` already renders any `session:error.message`
+    in a SnackBar, generically, for every error code — `PARTY_LOCKED` is
+    covered by that same mechanism with zero new client code. (Proactively
+    blocking back-navigation to an already-signed party's earlier steps,
+    so they never even attempt the now-rejected write, was considered and
+    explicitly deferred — the user opted for "backend rejection + error
+    message" over the extra Flutter work, at least for now.)
+  - Covered by 4 new backend tests: `session-report.test.js` (a signed
+    party's own patch is rejected `PARTY_LOCKED` while the report/session
+    stay unlocked; the *other*, not-yet-signed party can still patch their
+    own subtree; either party can still patch shared `accident.*` after
+    one party has signed) and `uploads.test.js` (a second signature upload
+    from an already-signed-off party is rejected `409 PARTY_LOCKED`, and
+    the original signature's `fileId` is left untouched). `npm test`: 62/62
+    passing (was 58 before this change). `flutter analyze`: clean
+    (no mobile files touched).
+
+## Known issues
+
+- **The live two-device run was not re-executed in Phase 12.** It's the
+  one acceptance-checklist item this phase didn't (and per its own
+  instructions, wasn't meant to) re-verify — see the checklist item above
+  for the specific earlier-phase sessions that already demonstrated it for
+  real. If a committee wants a *fresh* run immediately before the defense,
+  it should be rehearsed once more close to demo day regardless, per
+  master_plan.md §9's "rehearse this."

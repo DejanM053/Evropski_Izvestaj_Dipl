@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../config/env.dart';
 import '../models/report_model.dart';
@@ -6,6 +7,7 @@ import '../models/verify_result_model.dart';
 import '../services/api_client.dart';
 import '../services/device_id_service.dart';
 import '../theme/theme.dart';
+import '../utils/block_explorer.dart';
 import '../widgets/widgets.dart';
 
 /// Screen 14 (docs/master_plan.md §6/§5.5) — the thesis centerpiece. Two
@@ -416,8 +418,17 @@ class _ChainDetailsCard extends StatelessWidget {
         '${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}';
   }
 
+  Future<void> _openExplorer(String url) async {
+    final uri = Uri.parse(url);
+    if (await canLaunchUrl(uri)) {
+      await launchUrl(uri, mode: LaunchMode.externalApplication);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
+    final explorerUrl = explorerTxUrl(chain.network, chain.txHash);
+
     return Container(
       decoration: BoxDecoration(color: AppColors.surface, border: Border.all(color: AppColors.border)),
       child: Column(
@@ -436,6 +447,19 @@ class _ChainDetailsCard extends StatelessWidget {
                 MonoDataRow(label: 'Mreža', value: chain.network ?? '—'),
                 const SizedBox(height: AppSpacing.sm),
                 MonoDataRow(label: 'Upisano', value: _fmtDateTime(chain.anchoredAt)),
+                if (explorerUrl != null) ...[
+                  const SizedBox(height: AppSpacing.md),
+                  GestureDetector(
+                    onTap: () => _openExplorer(explorerUrl),
+                    child: Text(
+                      'Pogledaj na blok exploreru ›',
+                      style: AppTypography.bodyMedium.copyWith(
+                        color: AppColors.navy,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ),
+                ],
               ],
             ),
           ),
