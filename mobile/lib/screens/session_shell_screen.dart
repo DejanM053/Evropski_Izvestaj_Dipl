@@ -6,13 +6,17 @@ import '../services/socket_client.dart';
 import '../state/session_controller.dart';
 import '../theme/theme.dart';
 import '../widgets/widgets.dart';
+import 'steps/accident_details_step.dart';
+import 'steps/circumstances_step.dart';
+import 'steps/my_details_step.dart';
+import 'steps/photos_step.dart';
+import 'steps/sketch_step.dart';
 
 /// Screen 4 (docs/master_plan.md §6) — the persistent session shell: both
-/// parties' live connection/progress header, wrapping whatever step content
-/// comes next. Phases 7-9's screens (5-9) will render inside this shell;
-/// for Phase 6 the body is a placeholder that proves the socket plumbing
-/// works (session info, live "other driver connected" status) without
-/// building any of the form/circumstances/sketch/photos screens yet.
+/// parties' live connection/progress header, wrapping the Phase 7 step flow
+/// (screens 5-9: accident details, my details, circumstances, sketch,
+/// photos). Review/signature (Phase 8) aren't built yet, so the flow
+/// currently ends after Photos.
 class SessionShellScreen extends StatelessWidget {
   const SessionShellScreen({
     super.key,
@@ -43,6 +47,42 @@ class SessionShellScreen extends StatelessWidget {
   }
 }
 
+/// One entry per step screen (5-9). `key` is broadcast as the socket
+/// `party:ready` `stage` value (an opaque display string per
+/// .claude/rules/backend.md — the other party's client re-derives its own
+/// label/progress from this list, it never persisted-parses server state),
+/// so both clients must share this exact list/order.
+class _StepInfo {
+  const _StepInfo(this.key, this.title);
+  final String key;
+  final String title;
+}
+
+const _kSteps = [
+  _StepInfo('accident', 'Nezgoda'),
+  _StepInfo('details', 'Moji podaci'),
+  _StepInfo('circumstances', 'Okolnosti'),
+  _StepInfo('sketch', 'Skica'),
+  _StepInfo('photos', 'Fotografije'),
+];
+
+/// Step 1/8 is session pairing (screens 1-4, already behind us by the time
+/// the shell mounts) — the flow here picks up at step 2/8.
+const _kFirstGlobalStep = 2;
+const _kTotalSteps = 8;
+
+String _stageLabelFor(String key) {
+  final index = _kSteps.indexWhere((s) => s.key == key);
+  if (index == -1) return key;
+  return 'Korak ${index + _kFirstGlobalStep}/$_kTotalSteps · ${_kSteps[index].title}';
+}
+
+double _progressFor(String key) {
+  final index = _kSteps.indexWhere((s) => s.key == key);
+  if (index == -1) return 0;
+  return (index + _kFirstGlobalStep) / _kTotalSteps;
+}
+
 class _SessionShellBody extends StatefulWidget {
   const _SessionShellBody({required this.reportId});
 
@@ -54,11 +94,30 @@ class _SessionShellBody extends StatefulWidget {
 
 class _SessionShellBodyState extends State<_SessionShellBody> {
   SessionErrorEvent? _shownError;
+  int _stepIndex = 0;
 
   @override
   void initState() {
     super.initState();
     context.read<SessionController>().addListener(_maybeShowError);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _announceStep());
+  }
+
+  void _announceStep() {
+    if (!mounted) return;
+    context.read<SessionController>().sendReady(_kSteps[_stepIndex].key);
+  }
+
+  void _goToStep(int index) {
+    if (index < 0 || index >= _kSteps.length) return;
+    setState(() => _stepIndex = index);
+    _announceStep();
+  }
+
+  void _notYetAvailable() {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Pregled i potpisivanje stižu u sledećoj fazi razvoja.')),
+    );
   }
 
   void _maybeShowError() {
@@ -91,12 +150,21 @@ class _SessionShellBodyState extends State<_SessionShellBody> {
     }
   }
 
+  void _handleBack() {
+    if (_stepIndex == 0) {
+      _confirmLeave();
+    } else {
+      _goToStep(_stepIndex - 1);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final controller = context.watch<SessionController>();
     final connected = controller.connectionState == SocketConnectionState.connected;
     final selfLabel = controller.selfParty == 'A' ? 'VI · VOZAČ A' : 'VI · VOZAČ B';
     final otherLabel = controller.selfParty == 'A' ? 'DRUGI VOZAČ · B' : 'DRUGI VOZAČ · A';
+    final otherStage = controller.otherPartyStage;
 
     return Scaffold(
       backgroundColor: AppColors.paper,
@@ -108,67 +176,82 @@ class _SessionShellBodyState extends State<_SessionShellBody> {
               isLive: connected,
               self: SessionPartyProgress(
                 label: selfLabel,
-                stageLabel: connected ? 'Povezano' : 'Povezivanje…',
-                progress: 0,
+                stageLabel: connected ? _stageLabelFor(_kSteps[_stepIndex].key) : 'Povezivanje…',
+                progress: connected ? _progressFor(_kSteps[_stepIndex].key) : 0,
                 isSelf: true,
               ),
               other: SessionPartyProgress(
                 label: otherLabel,
-                stageLabel: controller.otherPartyConnected ? 'Povezan' : 'Čeka se povezivanje…',
-                progress: 0,
+                stageLabel: otherStage != null
+                    ? _stageLabelFor(otherStage)
+                    : (controller.otherPartyConnected ? 'Povezan' : 'Čeka se povezivanje…'),
+                progress: otherStage != null ? _progressFor(otherStage) : 0,
                 isSelf: false,
               ),
             ),
             if (!connected) const _ReconnectingBanner(),
-            Expanded(
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.all(AppSpacing.lg),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    StatusChip(
-                      label: controller.otherPartyConnected ? 'Drugi vozač povezan' : 'Čeka se drugi vozač',
-                      variant:
-                          controller.otherPartyConnected ? AppStatusChipVariant.confirmed : AppStatusChipVariant.pending,
-                    ),
-                    const SizedBox(height: AppSpacing.lg),
-                    Container(
-                      decoration: BoxDecoration(border: Border.all(color: AppColors.border)),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          const SectionHeader(label: 'Podaci o sesiji'),
-                          Padding(
-                            padding: const EdgeInsets.all(AppSpacing.lg),
-                            child: Column(
-                              children: [
-                                MonoDataRow(label: 'Šifra sesije', value: controller.sessionCode),
-                                const SizedBox(height: AppSpacing.sm + 2),
-                                MonoDataRow(label: 'Vaša uloga', value: 'Vozač ${controller.selfParty}'),
-                                const SizedBox(height: AppSpacing.sm + 2),
-                                MonoDataRow(label: 'ID izveštaja', value: widget.reportId),
-                              ],
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: AppSpacing.xl),
-                    Text(
-                      'Obrazac izveštaja stiže u sledećoj fazi razvoja. Sve promene će biti vidljive '
-                      'obojici vozača u realnom vremenu čim budu dodate.',
-                      style: AppTypography.bodyMedium.copyWith(color: AppColors.textSecondary),
-                    ),
-                  ],
-                ),
-              ),
+            _StepHeaderBar(
+              title: _kSteps[_stepIndex].title,
+              stepLabel: 'KORAK ${_stepIndex + _kFirstGlobalStep} / $_kTotalSteps',
+              onBack: _handleBack,
             ),
-            Padding(
-              padding: const EdgeInsets.all(AppSpacing.lg),
-              child: AppButton(label: 'Napusti sesiju', onPressed: _confirmLeave, variant: AppButtonVariant.secondary),
+            Expanded(
+              child: IndexedStack(
+                index: _stepIndex,
+                children: [
+                  AccidentDetailsStep(onNext: () => _goToStep(1)),
+                  MyDetailsStep(onNext: () => _goToStep(2)),
+                  CircumstancesStep(onNext: () => _goToStep(3)),
+                  SketchStep(reportId: widget.reportId, onNext: () => _goToStep(4)),
+                  PhotosStep(reportId: widget.reportId, onNext: _notYetAvailable),
+                ],
+              ),
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// Lightweight step wayfinding row (title + "KORAK X/8" + back arrow) below
+/// the heavy navy [SessionProgressHeader] — not a second navy block, since
+/// the header above already carries that weight; a plain surface bar keeps
+/// the two from visually competing while still surfacing per-screen step
+/// info the way each design mockup's own header did (screens "1e"-"1h").
+class _StepHeaderBar extends StatelessWidget {
+  const _StepHeaderBar({required this.title, required this.stepLabel, required this.onBack});
+
+  final String title;
+  final String stepLabel;
+  final VoidCallback onBack;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: AppSpacing.sm, vertical: AppSpacing.xs),
+      decoration: const BoxDecoration(
+        color: AppColors.surface,
+        border: Border(bottom: BorderSide(color: AppColors.border)),
+      ),
+      child: Row(
+        children: [
+          IconButton(
+            onPressed: onBack,
+            icon: const Icon(Icons.arrow_back, color: AppColors.navy),
+            tooltip: 'Nazad',
+          ),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(title, style: AppTypography.titleSmall.copyWith(color: AppColors.textPrimary)),
+                Text(stepLabel, style: AppTypography.monoEyebrow.copyWith(color: AppColors.textMuted)),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }

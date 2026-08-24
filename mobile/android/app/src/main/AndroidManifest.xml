@@ -1,9 +1,12 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <!-- REST/Socket.IO calls to the backend (screens 1-4 networking layer). -->
     <uses-permission android:name="android.permission.INTERNET"/>
-    <!-- mobile_scanner: QR scan on the Join session screen. -->
+    <!-- mobile_scanner: QR scan (Join session), image_picker: photo capture (Photos screen). -->
     <uses-permission android:name="android.permission.CAMERA"/>
     <uses-feature android:name="android.hardware.camera" android:required="false"/>
+    <!-- geolocator: GPS autofill on the Accident details screen. -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
     <application
         android:label="my_app"
         android:name="${applicationName}"

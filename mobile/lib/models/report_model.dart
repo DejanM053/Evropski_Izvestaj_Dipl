@@ -249,7 +249,8 @@ class PartyReportModel {
         policyholder: json['policyholder'] == null
             ? const PolicyholderModel()
             : PolicyholderModel.fromJson((json['policyholder'] as Map).cast<String, dynamic>()),
-        circumstances: (json['circumstances'] as List<dynamic>? ?? const []).map((e) => e as int).toList(),
+        circumstances:
+            (json['circumstances'] as List<dynamic>? ?? const []).map((e) => (e as num).toInt()).toList(),
         visibleDamage: json['visibleDamage'] as String? ?? '',
         remarks: json['remarks'] as String? ?? '',
         signature: json['signature'] == null
@@ -375,6 +376,29 @@ class ReportModel {
 
   /// `'A'` or `'B'` -> that party's half of the report.
   PartyReportModel partyFor(String party) => party == 'A' ? partyA : partyB;
+
+  /// Applies one `report:patched` event (docs/master_plan.md §5.3 — dot
+  /// path + value, e.g. `partyA.vehicle.plate`) by round-tripping through
+  /// [toJson]/[fromJson] rather than hand-writing a setter per field: this
+  /// mirrors the backend's own `report.set(path, value)` (Mongoose dot-path
+  /// setter) and stays correct as new fields are added to the schema.
+  /// `toJson()` always produces the full nested map tree (every sub-model
+  /// has non-null defaults), so every path segment except the last is
+  /// guaranteed to already exist as a `Map` — if it doesn't (an
+  /// unrecognized/malformed path), the patch is dropped rather than
+  /// crashing the live session.
+  ReportModel applyPatch(String path, dynamic value) {
+    final json = toJson();
+    final segments = path.split('.');
+    dynamic node = json;
+    for (final segment in segments.sublist(0, segments.length - 1)) {
+      if (node is! Map<String, dynamic> || node[segment] is! Map<String, dynamic>) return this;
+      node = node[segment];
+    }
+    if (node is! Map<String, dynamic>) return this;
+    node[segments.last] = value;
+    return ReportModel.fromJson(json);
+  }
 
   factory ReportModel.fromJson(Map<String, dynamic> json) {
     final pdf = (json['pdf'] as Map?)?.cast<String, dynamic>() ?? const {};

@@ -141,6 +141,44 @@ describe("File uploads (GridFS + hashing)", () => {
     });
   });
 
+  describe("DELETE /api/reports/:id/photos/:fileId", () => {
+    it("removes the photo, its attachmentHashes entry, and the GridFS blob", async () => {
+      const upload = await request(app)
+        .post(`/api/reports/${reportId}/photos`)
+        .field("party", "A")
+        .attach("file", PNG_BYTES, { filename: "photo.png", contentType: "image/png" });
+      const fileId = upload.body.fileId;
+
+      const res = await request(app).delete(`/api/reports/${reportId}/photos/${fileId}`);
+      expect(res.status).toBe(204);
+
+      const report = await Report.findById(reportId);
+      expect(report.photos).toHaveLength(0);
+      expect(report.attachmentHashes).toHaveLength(0);
+
+      const streamed = await request(app).get(`/api/files/${fileId}`);
+      expect(streamed.status).toBe(404);
+    });
+
+    it("returns 404 for a photo that doesn't exist on this report", async () => {
+      const res = await request(app).delete(
+        `/api/reports/${reportId}/photos/${new mongoose.Types.ObjectId()}`
+      );
+      expect(res.status).toBe(404);
+    });
+
+    it("rejects deleting from a sealed report", async () => {
+      const upload = await request(app)
+        .post(`/api/reports/${reportId}/photos`)
+        .field("party", "A")
+        .attach("file", PNG_BYTES, { filename: "photo.png", contentType: "image/png" });
+      await Report.findByIdAndUpdate(reportId, { status: "sealed" });
+
+      const res = await request(app).delete(`/api/reports/${reportId}/photos/${upload.body.fileId}`);
+      expect(res.status).toBe(409);
+    });
+  });
+
   describe("POST /api/reports/:id/sketch", () => {
     it("stores the sketch and replaces a prior sketch's attachmentHashes entry", async () => {
       const first = await request(app)

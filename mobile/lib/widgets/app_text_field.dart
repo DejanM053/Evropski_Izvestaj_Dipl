@@ -20,7 +20,12 @@ class AppTextField extends StatefulWidget {
     this.enabled = true,
     this.monospace = false,
     this.keyboardType,
+    this.textCapitalization = TextCapitalization.none,
+    this.maxLines = 1,
     this.onChanged,
+    this.focusNode,
+    this.readOnly = false,
+    this.onTap,
   });
 
   final String label;
@@ -34,15 +39,29 @@ class AppTextField extends StatefulWidget {
   /// the design renders in IBM Plex Mono instead of IBM Plex Sans.
   final bool monospace;
   final TextInputType? keyboardType;
+  final TextCapitalization textCapitalization;
+  final int maxLines;
   final ValueChanged<String>? onChanged;
+
+  /// Supply an external node (e.g. PatchTextField) when the caller needs to
+  /// check `hasFocus` itself — such as skipping a remote-value resync while
+  /// the user is actively typing. Falls back to an internally owned node.
+  final FocusNode? focusNode;
+
+  /// Read-only + tappable (date/GPS pickers use this instead of a real
+  /// keyboard field, but keep the same label/border/error treatment).
+  final bool readOnly;
+  final VoidCallback? onTap;
 
   @override
   State<AppTextField> createState() => _AppTextFieldState();
 }
 
 class _AppTextFieldState extends State<AppTextField> {
-  final _focusNode = FocusNode();
+  FocusNode? _ownedFocusNode;
   bool _focused = false;
+
+  FocusNode get _focusNode => widget.focusNode ?? (_ownedFocusNode ??= FocusNode());
 
   @override
   void initState() {
@@ -57,7 +76,7 @@ class _AppTextFieldState extends State<AppTextField> {
   @override
   void dispose() {
     _focusNode.removeListener(_handleFocusChange);
-    _focusNode.dispose();
+    _ownedFocusNode?.dispose();
     super.dispose();
   }
 
@@ -93,6 +112,10 @@ class _AppTextFieldState extends State<AppTextField> {
             focusNode: _focusNode,
             enabled: widget.enabled,
             keyboardType: widget.keyboardType,
+            textCapitalization: widget.textCapitalization,
+            maxLines: widget.maxLines,
+            readOnly: widget.readOnly,
+            onTap: widget.onTap,
             onChanged: widget.onChanged,
             style: valueStyle.copyWith(
               color: widget.enabled ? AppColors.textPrimary : AppColors.textMuted,

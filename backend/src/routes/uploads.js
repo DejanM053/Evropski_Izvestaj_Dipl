@@ -1,5 +1,6 @@
 const express = require("express");
 const multer = require("multer");
+const mongoose = require("mongoose");
 const { requireUnsealedReport } = require("../services/report-guard.service");
 const storage = require("../services/storage.service");
 const { sha256 } = require("../services/hash.service");
@@ -92,6 +93,31 @@ router.post(
     }
   }
 );
+
+// DELETE /api/reports/:id/photos/:fileId — removes one photo before the
+// report is sealed (docs/master_plan.md §6 screen 9: "delete before lock").
+// Not in the original §5.2 endpoint list — added in Phase 7 once the mobile
+// Photos screen needed it; mirrors replaceAttachment's
+// attachmentHashes-filter + best-effort GridFS delete.
+router.delete("/:id/photos/:fileId", requireUnsealedReport, async (req, res, next) => {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.fileId)) {
+      return res.status(404).json({ error: "photo not found" });
+    }
+    const fileId = new mongoose.Types.ObjectId(req.params.fileId);
+    const report = req.report;
+    const exists = report.photos.some((p) => p.fileId && p.fileId.equals(fileId));
+    if (!exists) return res.status(404).json({ error: "photo not found" });
+
+    report.photos = report.photos.filter((p) => !p.fileId || !p.fileId.equals(fileId));
+    await replaceAttachment(report, fileId);
+    await report.save();
+
+    res.status(204).end();
+  } catch (err) {
+    next(err);
+  }
+});
 
 // POST /api/reports/:id/sketch — single PNG, shared between both parties.
 router.post(
