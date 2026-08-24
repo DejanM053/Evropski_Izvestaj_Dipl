@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart' show ValueChanged;
 
 import '../models/report_model.dart';
 import '../models/session_model.dart';
+import '../models/verify_result_model.dart';
 
 /// Thrown for any failed request. `statusCode` is null for network-level
 /// failures (no response at all — host unreachable, timeout).
@@ -102,18 +103,25 @@ class ApiClient {
   final String baseUrl;
   final Dio _dio;
 
-  Future<CreateSessionResult> createSession() async {
+  /// `deviceId` (docs/master_plan.md §6 client rules,
+  /// `DeviceIdService.getOrCreate()`) is recorded on the created report so
+  /// it later shows up in this device's own `getReports` history — see
+  /// `Report.deviceIds` (Phase 11 schema decision, `backend/src/models/Report.js`).
+  Future<CreateSessionResult> createSession({required String deviceId}) async {
     try {
-      final res = await _dio.post<Map<String, dynamic>>('/api/sessions');
+      final res = await _dio.post<Map<String, dynamic>>('/api/sessions', data: {'deviceId': deviceId});
       return CreateSessionResult.fromJson(res.data!);
     } on DioException catch (e) {
       throw ApiException.fromDioException(e);
     }
   }
 
-  Future<JoinSessionResult> joinSession(String sessionCode) async {
+  Future<JoinSessionResult> joinSession(String sessionCode, {required String deviceId}) async {
     try {
-      final res = await _dio.post<Map<String, dynamic>>('/api/sessions/${Uri.encodeComponent(sessionCode)}/join');
+      final res = await _dio.post<Map<String, dynamic>>(
+        '/api/sessions/${Uri.encodeComponent(sessionCode)}/join',
+        data: {'deviceId': deviceId},
+      );
       return JoinSessionResult.fromJson(res.data!);
     } on DioException catch (e) {
       throw ApiException.fromDioException(e);
@@ -258,6 +266,30 @@ class ApiClient {
         options: Options(responseType: ResponseType.bytes),
       );
       return Uint8List.fromList(res.data!);
+    } on DioException catch (e) {
+      throw ApiException.fromDioException(e);
+    }
+  }
+
+  /// `GET /api/reports?deviceId=...` (docs/master_plan.md §5.2, Phase 11) —
+  /// screen 15's History list. Newest first, per the backend's own sort.
+  Future<List<ReportModel>> getReports({required String deviceId}) async {
+    try {
+      final res = await _dio.get<List<dynamic>>('/api/reports', queryParameters: {'deviceId': deviceId});
+      return (res.data ?? const [])
+          .map((r) => ReportModel.fromJson((r as Map).cast<String, dynamic>()))
+          .toList();
+    } on DioException catch (e) {
+      throw ApiException.fromDioException(e);
+    }
+  }
+
+  /// `GET /api/reports/:id/verify` (docs/master_plan.md §5.5, Phase 11) —
+  /// screen 14. Always a fresh server-side recompute, never cached.
+  Future<VerifyResult> verifyReport(String reportId) async {
+    try {
+      final res = await _dio.get<Map<String, dynamic>>('/api/reports/${Uri.encodeComponent(reportId)}/verify');
+      return VerifyResult.fromJson(res.data!);
     } on DioException catch (e) {
       throw ApiException.fromDioException(e);
     }

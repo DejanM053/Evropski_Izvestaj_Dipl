@@ -5,6 +5,7 @@ import 'package:qr_flutter/qr_flutter.dart';
 
 import '../config/env.dart';
 import '../services/api_client.dart';
+import '../services/device_id_service.dart';
 import '../services/socket_client.dart';
 import '../theme/theme.dart';
 import '../widgets/widgets.dart';
@@ -41,7 +42,8 @@ class _CreateSessionScreenState extends State<CreateSessionScreen> {
 
   Future<void> _createSession() async {
     try {
-      final result = await _api.createSession();
+      final deviceId = await DeviceIdService.getOrCreate();
+      final result = await _api.createSession(deviceId: deviceId);
       if (!mounted) return;
       setState(() {
         _session = result;

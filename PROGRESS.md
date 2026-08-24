@@ -2,15 +2,15 @@
 
 ## Current phase
 
-Phase 11 — Verify endpoint + screens 14–15
+Phase 12 — Testnet deploy + README + demo script
 
-Phase 10 is done: confirmed end to end against a real two-device live run
-(physical phone as party B, the user's own Chrome as party A) — both
-devices reached the Report complete screen showing the same real anchored
-tx hash (`0xa4ef61cb...773f3eb7`, block 3), independently confirmed against
-Mongo and the backend's finalize logs. See Decisions below for a real bug
-this live run surfaced (client never actually called `/finalize`) and its
-fix.
+Phase 11 is done, confirmed both ways: first against the backend alone
+(throwaway report, real Hardhat anchor, `scripts/tamper.js`, re-verify
+TAMPERED), then for real on the actual two-device mobile UI (physical
+phone + the user's own Chrome) — two real sessions were carried through to
+sealed reports, and `scripts/tamper.js` was run against one of them
+(`6a8c4964...99afb4`) while the other (`6a8c4846...99afa0`) was left
+untouched as a control. See Decisions below for both passes.
 
 ## Phases (from master_plan.md §8)
 
@@ -25,7 +25,7 @@ fix.
 - [x] Phase 8 — Screens 10–11 (review + signatures)
 - [x] Phase 9 — PDF generation
 - [x] Phase 10 — Finalize + anchor + screens 12–13
-- [ ] Phase 11 — Verify endpoint + screens 14–15
+- [x] Phase 11 — Verify endpoint + screens 14–15
 - [ ] Phase 12 — Testnet deploy + README + demo script
 
 ## Decisions
@@ -965,6 +965,136 @@ fix.
     1 photo + both signatures), confirmed independently against both the
     backend's `[finalize:*]` logs and the sealed Mongo document.
 
-- `GET /api/reports?deviceId=` doesn't filter — no `deviceId` field exists
-  anywhere in §5.1's schemas yet. Needs a schema decision before the mobile
-  client's local-deviceId history scoping (§6 client rules) can work.
+- **Phase 11** — `GET /api/reports/:id/verify` (§5.5, the thesis
+  centerpiece), deviceId-scoped history, screens 14–15, `scripts/tamper.js`.
+  - **`verify.service.js`'s match logic is recomputed-vs-on-chain, never
+    recomputed-vs-stored.** Every hash is recomputed fresh from GridFS
+    bytes / the on-chain record at request time; Mongo's own
+    `pdf.sha256`/`attachmentHashes[].sha256` fields are surfaced in the
+    response purely as `storedHash`, a third display value, never an input
+    to `match`. This is deliberate, not incidental: the whole point of
+    anchoring on-chain instead of just trusting the database is that even
+    an attacker who edits both a file's bytes *and* its stored hash field
+    in Mongo still can't fool verify, since the on-chain record is outside
+    their reach. A recomputed-vs-stored check alone would have missed
+    exactly that case.
+  - **Per-attachment `match` is recomputed-current-bytes vs.
+    `attachmentHashes[].sha256`** (the value recorded at finalize time,
+    itself one of the inputs hashed into `bundleHash`) — there's no
+    per-file hash on-chain, only the aggregate `bundleHash`, so this is the
+    only available per-file ground truth. A single swapped attachment
+    therefore shows up two ways in the response: that one entry in
+    `attachments` with `match: false`, and `bundle.match: false` (since
+    `bundleHash` is recomputed from *current* attachment bytes the same
+    deterministic way `hash.service.computeBundleHash` does at finalize
+    time — sorted hex strings, re-hashed). `pdf.match` is unaffected by an
+    attachment swap; the two are checked and reported independently, which
+    is what lets the UI say *which* thing is wrong.
+  - **Verdict logic**: `NOT_ANCHORED` if `report.chain.txHash` isn't set,
+    or if it is but `chain.service.getOnChainRecord` still can't find a
+    record (RPC down, or the contract's own "not found" revert — both
+    collapsed to the same outcome rather than a hard 500, since neither
+    means anything different to a user checking a report's status).
+    Otherwise `VERIFIED` if both `pdf.match` and `bundle.match` are true,
+    else `TAMPERED`. A missing/deleted attachment file recomputes to a
+    hash of `null`, folded into the bundle input as `""` — guaranteed to
+    mismatch, which is the correct outcome for a vanished file.
+  - **`chain.service.getOnChainRecord`** wraps the existing read-only
+    `contract` (no signer needed, same instance `checkChain` already uses)
+    and catches *any* read failure — including the contract's own "not
+    found" revert for an id that was never anchored — returning `null`
+    rather than throwing, so `verify.service.js` doesn't need its own
+    try/catch around the chain read.
+  - **`deviceId` schema decision** (the gap `GET /api/reports?deviceId=`
+    was left with since Phase 3): `Report.deviceIds: [String]`, not a field
+    on `Session`. History (§6 screen 15) scopes *reports*, and a report
+    should stay visible in history long after its session's 24h TTL reaps
+    the `Session` document — putting it on `Session` would have made
+    history silently go blank a day after every report. Both parties'
+    deviceIds land in the same flat array (pushed once each, at session
+    create/join in `routes/sessions.js`, via `$addToSet` on join so a
+    same-device rejoin doesn't duplicate) — a report shows up in either
+    party's history, there's no tracked "which slot" a device occupied.
+    `POST /api/sessions` and `POST /api/sessions/:code/join` both now
+    accept an optional `{deviceId}` body field; the mobile client always
+    sends its `DeviceIdService.getOrCreate()` value.
+  - **`scripts/tamper.js`** is a standalone CLI (`npm run tamper -- <id>
+    [--photo]`), not a test helper — it's the literal §9 demo step run
+    against the real live stack, not jest. It flips one byte of the stored
+    PDF by default, or (`--photo`) overwrites the report's first photo with
+    a different image, via a new `storage.service.overwriteFile(fileId,
+    buffer)` (delete + re-upload under the same GridFS `_id`, using the
+    driver's `openUploadStreamWithId`) — deliberately leaves the `Report`
+    document itself completely untouched (`pdf.sha256`/`attachmentHashes`
+    keep their original, honest values), since that's the entire premise of
+    the demo: only what's sitting in GridFS changes, and verify still
+    catches it because it never trusted those stored fields as its source
+    of truth in the first place.
+  - **Verified against the real live stack, not just jest**: seeded a
+    throwaway signed-off report directly in Mongo (same shortcut
+    `backend/test/verify.test.js` uses), ran it through the real
+    `POST /finalize` against the docker-compose `hardhat` node (a genuine
+    anchor tx, confirmed on-chain), called the real `GET /verify` →
+    `VERIFIED` with `pdf.recomputedHash === pdf.onChainHash`, then ran the
+    real `node scripts/tamper.js <id>` CLI (not just the underlying
+    function — this exercises the script's own env/argv/exit-code wiring
+    too) and called `GET /verify` again → `TAMPERED`, `pdf.match: false`,
+    `pdf.storedHash === pdf.onChainHash` (proving the mismatch is caught by
+    the recomputed-vs-chain check, not a stale stored field). Also smoke-
+    tested `?deviceId=` filtering directly against the live stack: a
+    session created with a `deviceId` shows up under that id and not under
+    an unrelated one. Rebuilt and recreated the `backend` container
+    (`docker compose build backend` + `up -d --no-deps backend`, same
+    non-`--build` care as every prior phase) before this pass, then cleaned
+    up all throwaway Mongo/GridFS data created for it afterward — nothing
+    from this verification run persists in the shared dev database.
+  - **Mobile**: `VerifyScreen` (14) has two entry paths — given a
+    `reportId` directly (from `ReportCompleteScreen`'s new "Proveri
+    integritet" action, or a sealed `HistoryScreen` row) it verifies
+    immediately; given none (Home's "Provera izveštaja" row) it first shows
+    a picker of this device's own sealed reports (`ApiClient.getReports`
+    filtered client-side to `status == 'sealed'`, since only a sealed
+    report has anything on-chain to check). `HistoryScreen` (15) lists
+    every report `GET /api/reports?deviceId=` returns, reusing a new shared
+    `ReportListTile` widget for both screens' list rows (date, both
+    drivers' names, both plates, a status chip) — no source mockup exists
+    for either screen (they weren't part of the imported design set), so
+    both are built from the existing token/widget vocabulary rather than
+    copied from an unseen screen, including the `errorHighlightBg`/
+    `successHighlightBg` color tokens `app_colors.dart` had already
+    reserved specifically for "the verify screen's hash-diff highlight"
+    back in Phase 5.
+  - **`ReportCompleteScreen` (13) gained an optional `report` constructor
+    param** so `HistoryScreen` can push it standalone for a sealed report
+    with no live session left to reconnect to (a session's `Session`
+    document may be long TTL-expired by the time someone browses history,
+    and re-opening a `SessionController`/socket for history browsing would
+    be wrong regardless). `final report = widget.report ??
+    context.watch<SessionController>().report;` — `??` short-circuits, so
+    the existing live path (`SessionShellScreen`, `report` left null) never
+    changes behavior, and the standalone path never requires a
+    `SessionController` to exist in the widget tree at all. The report
+    object History passes in is already the *full* document (`GET
+    /api/reports?deviceId=` returns whole `Report` documents, not
+    summaries), so no second network round trip is needed either.
+  - **Confirmed live on the real two-device mobile UI**, not just the
+    backend-only pass above: USB-connected physical phone + the user's own
+    Chrome, `adb reverse tcp:3000 tcp:3000` for the phone (same setup as
+    every prior phase's live run). Started both with a single
+    `flutter run` each (phone first through its Gradle build, then Chrome
+    — per the existing "never run two concurrent `flutter run`s against
+    Android" caution; Chrome's build uses a different toolchain so running
+    it alongside the already-launched phone was fine). Two real sessions
+    were carried end to end through pairing → form → sketch/photos →
+    review → signatures → finalize, reaching two independently sealed
+    reports: `6a8c4964...99afb4` (tx `0xdca3b8c9...eae319e`, block 6) and
+    `6a8c4846...99afa0` (tx `0x437aad45...ea8ac18085`). `node scripts/tamper.js
+    6a8c4964...99afb4` was then run against the first — confirmed via
+    `GET /verify` before (`VERIFIED`) and after (`TAMPERED`, `pdf.match:
+    false`, `bundle.match` and every attachment still `true`, i.e. only the
+    PDF was touched) — and the user confirmed the real Verify screen
+    (reached via `ReportCompleteScreen`'s new "Proveri integritet" action)
+    rendered the TAMPERED state correctly for that report. The second
+    report was left untouched as a control and was not re-verified in this
+    pass, but has no reason to differ from the backend-only VERIFIED case
+    above.

@@ -6,6 +6,7 @@ export 'fill_sample_data_button.dart';
 export 'mono_data_row.dart';
 export 'patch_text_field.dart';
 export 'patch_toggle_row.dart';
+export 'report_list_tile.dart';
 export 'section_header.dart';
 export 'session_progress_header.dart';
 export 'status_chip.dart';

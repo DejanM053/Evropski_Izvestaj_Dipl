@@ -9,8 +9,9 @@ const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 
 router.post("/", async (req, res, next) => {
   try {
+    const { deviceId } = req.body || {};
     const sessionCode = await generateUniqueSessionCode();
-    const report = await Report.create({});
+    const report = await Report.create(deviceId ? { deviceIds: [deviceId] } : {});
     const session = await Session.create({
       sessionCode,
       reportId: report._id,
@@ -31,6 +32,7 @@ router.post("/", async (req, res, next) => {
 
 router.post("/:code/join", async (req, res, next) => {
   try {
+    const { deviceId } = req.body || {};
     const code = req.params.code.toUpperCase();
     const session = await Session.findOne({
       sessionCode: code,
@@ -43,6 +45,10 @@ router.post("/:code/join", async (req, res, next) => {
 
     session.status = "joined";
     await session.save();
+
+    if (deviceId && session.reportId) {
+      await Report.updateOne({ _id: session.reportId }, { $addToSet: { deviceIds: deviceId } });
+    }
 
     res.json({
       sessionId: session._id,

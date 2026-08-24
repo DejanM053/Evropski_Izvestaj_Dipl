@@ -4,20 +4,14 @@ import 'package:flutter/material.dart';
 import '../theme/theme.dart';
 import 'create_session_screen.dart';
 import 'dev_gallery.dart';
+import 'history_screen.dart';
 import 'join_session_screen.dart';
+import 'verify_screen.dart';
 
 /// Screen 1 (docs/master_plan.md §6) — new report / history / verify entry
-/// points. History (screen 15) and Verify (screen 14) aren't built until
-/// Phase 11, so their rows are present (matching the design 1:1) but inert
-/// for now — tapping surfaces a snackbar instead of a dead navigation.
+/// points. History (screen 15) and Verify (screen 14) landed in Phase 11.
 class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
-
-  void _notYetAvailable(BuildContext context) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Dostupno u kasnijoj fazi razvoja.')),
-    );
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -54,13 +48,17 @@ class HomeScreen extends StatelessWidget {
                     const Divider(height: 1, color: AppColors.border),
                     _HomeListRow(
                       label: 'Istorija izveštaja',
-                      trailing: '4',
-                      onTap: () => _notYetAvailable(context),
+                      trailing: '›',
+                      onTap: () => Navigator.of(context).push(
+                        MaterialPageRoute(builder: (_) => const HistoryScreen()),
+                      ),
                     ),
                     _HomeListRow(
                       label: 'Provera izveštaja',
                       trailing: '›',
-                      onTap: () => _notYetAvailable(context),
+                      onTap: () => Navigator.of(context).push(
+                        MaterialPageRoute(builder: (_) => const VerifyScreen()),
+                      ),
                     ),
                     const SizedBox(height: AppSpacing.xl),
                     const _EmergencyNotice(),

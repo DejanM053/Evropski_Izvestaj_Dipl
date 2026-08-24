@@ -160,5 +160,8 @@ Hardhat account).
   through `filling`/`review` — that will land with the routes/UI that
   actually drive those transitions. Don't assume `party:ready` advances
   `status`; it only flips the per-party `ready` flag and rebroadcasts.
-- `GET /api/reports?deviceId=` is accepted but a no-op — `Report`/`Session`
-  schemas (§5.1) have no `deviceId` field. `?plate=` works.
+- `GET /api/reports?deviceId=` now filters (Phase 11) against a new
+  `Report.deviceIds: [String]` array — not on `Session`, so history stays
+  correct after a session's 24h TTL reaps its `Session` document. Populated
+  via an optional `{deviceId}` body field on `POST /api/sessions` and
+  `POST /api/sessions/:code/join`. See PROGRESS.md Phase 11 Decisions.

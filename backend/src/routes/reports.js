@@ -3,6 +3,7 @@ const mongoose = require("mongoose");
 const Report = require("../models/Report");
 const storage = require("../services/storage.service");
 const { runFinalize, FinalizeError } = require("../services/finalize.service");
+const { verifyReport, VerifyError } = require("../services/verify.service");
 
 const router = express.Router();
 
@@ -13,14 +14,22 @@ const FINALIZE_ERROR_STATUS = {
   REPORT_NOT_FOUND: 404,
 };
 
-// Note: only ?plate= is wired up. §5.1's Report schema has no deviceId
-// field to scope by, so ?deviceId= is accepted but currently a no-op.
+const VERIFY_ERROR_STATUS = {
+  REPORT_NOT_FOUND: 404,
+};
+
+// Phase 11: ?deviceId= now filters against Report.deviceIds (see
+// models/Report.js's Phase 11 schema-decision comment); ?plate= unchanged.
+// Both can be combined.
 router.get("/", async (req, res, next) => {
   try {
-    const { plate } = req.query;
+    const { plate, deviceId } = req.query;
     const filter = {};
     if (plate) {
       filter.$or = [{ "partyA.vehicle.plate": plate }, { "partyB.vehicle.plate": plate }];
+    }
+    if (deviceId) {
+      filter.deviceIds = deviceId;
     }
     const reports = await Report.find(filter).sort({ createdAt: -1 });
     res.json(reports);
@@ -64,6 +73,21 @@ router.get("/:id/pdf", async (req, res, next) => {
     downloadStream.once("error", next);
     downloadStream.pipe(res);
   } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/reports/:id/verify — §5.5, the thesis centerpiece. Always a
+// fresh recompute (never a cached/stored result) — see verify.service.js.
+router.get("/:id/verify", async (req, res, next) => {
+  try {
+    const result = await verifyReport(req.params.id);
+    res.json(result);
+  } catch (err) {
+    if (err instanceof VerifyError) {
+      const statusCode = VERIFY_ERROR_STATUS[err.code] || 500;
+      return res.status(statusCode).json({ error: err.message, code: err.code });
+    }
     next(err);
   }
 });

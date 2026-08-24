@@ -116,6 +116,17 @@ const ChainSchema = new mongoose.Schema(
 const ReportSchema = new mongoose.Schema({
   sessionId: { type: mongoose.Schema.Types.ObjectId, ref: "Session", default: null },
   status: { type: String, enum: STATUSES, default: "waiting" },
+  // Phase 11 schema decision: §5.1 never defined where a client's locally
+  // generated deviceId (mobile/lib/services/device_id_service.dart) lives,
+  // so `GET /api/reports?deviceId=` was a no-op through Phase 10 (see
+  // PROGRESS.md "Known scope gaps"). Recorded here rather than on Session
+  // because History (§6 screen 15) scopes *reports*, not sessions, and a
+  // session is TTL-reaped long before its report should disappear from
+  // history. Both parties' deviceIds land in the same flat array (whichever
+  // device created or joined the session, pushed once in
+  // routes/sessions.js) — a report shows up in either party's history,
+  // there's no need to know which slot a given device occupied.
+  deviceIds: { type: [String], default: [] },
   accident: { type: AccidentSchema, default: () => ({}) },
   partyA: { type: PartyReportSchema, default: () => ({}) },
   partyB: { type: PartyReportSchema, default: () => ({}) },

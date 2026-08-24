@@ -47,4 +47,32 @@ async function deleteFile(fileId) {
   await getBucket().delete(new mongoose.Types.ObjectId(fileId));
 }
 
-module.exports = { storeBuffer, openDownloadStream, getFileBuffer, getFileMetadata, deleteFile, BUCKET_NAME };
+// Replaces a stored file's bytes in place, keeping the same _id — used only
+// by scripts/tamper.js's demo flow, which needs a report's
+// pdf.fileId/attachmentHashes[].fileId to keep pointing at a file that now
+// holds different bytes. That's the entire point of the tamper demo:
+// nothing in the Report document itself changes (sha256 fields stay at
+// their original, honest values), only what's actually sitting in GridFS.
+async function overwriteFile(fileId, buffer) {
+  const id = new mongoose.Types.ObjectId(fileId);
+  const existing = await getFileMetadata(id);
+  await getBucket().delete(id);
+  await new Promise((resolve, reject) => {
+    const uploadStream = getBucket().openUploadStreamWithId(id, existing?.filename || "tampered", {
+      metadata: existing?.metadata,
+    });
+    uploadStream.once("error", reject);
+    uploadStream.once("finish", resolve);
+    uploadStream.end(buffer);
+  });
+}
+
+module.exports = {
+  storeBuffer,
+  openDownloadStream,
+  getFileBuffer,
+  getFileMetadata,
+  deleteFile,
+  overwriteFile,
+  BUCKET_NAME,
+};

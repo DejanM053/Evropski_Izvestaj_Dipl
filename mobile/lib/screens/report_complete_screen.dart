@@ -14,6 +14,7 @@ import '../services/api_client.dart';
 import '../state/session_controller.dart';
 import '../theme/theme.dart';
 import '../widgets/widgets.dart';
+import 'verify_screen.dart';
 
 /// Public-testnet block explorers this app knows how to link to (Phase 12
 /// only wires up Sepolia in hardhat.config.js — see PROGRESS.md — but Amoy
@@ -31,10 +32,22 @@ const _kExplorerTxBaseUrls = {
 /// go through one on-demand download (`ApiClient.downloadFile` against the
 /// existing `GET /api/files/:fileId`) into a temp file, since `open_filex`/
 /// `share_plus` both need a local path, not a URL.
+///
+/// Two entry paths (Phase 11 added the second): live, from
+/// `SessionShellScreen` once `SessionController.report.status == 'sealed'`
+/// (`report` left null, read from the live controller as before), and
+/// standalone, from `HistoryScreen` (screen 15) tapping a past report —
+/// there [report] is passed directly (already fully fetched by History's
+/// own `GET /api/reports?deviceId=` call) since there's no live session/
+/// socket to reconnect to for a report whose session may be long TTL-
+/// expired. `??` short-circuits so the live path never touches
+/// `Provider.of<SessionController>` when a report was passed directly, and
+/// the standalone path never needs a `SessionController` in the tree at all.
 class ReportCompleteScreen extends StatefulWidget {
-  const ReportCompleteScreen({super.key, required this.reportId});
+  const ReportCompleteScreen({super.key, required this.reportId, this.report});
 
   final String reportId;
+  final ReportModel? report;
 
   @override
   State<ReportCompleteScreen> createState() => _ReportCompleteScreenState();
@@ -105,6 +118,12 @@ class _ReportCompleteScreenState extends State<ReportCompleteScreen> {
     );
   }
 
+  void _openVerify(String reportId) {
+    Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => VerifyScreen(reportId: reportId)),
+    );
+  }
+
   String _fmtDate(DateTime? d) {
     if (d == null) return '—';
     return '${d.day.toString().padLeft(2, '0')}.${d.month.toString().padLeft(2, '0')}.${d.year}.';
@@ -127,8 +146,7 @@ class _ReportCompleteScreenState extends State<ReportCompleteScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final controller = context.watch<SessionController>();
-    final report = controller.report;
+    final report = widget.report ?? context.watch<SessionController>().report;
 
     if (report == null) {
       return const Scaffold(backgroundColor: AppColors.paper, body: Center(child: CircularProgressIndicator()));
@@ -358,6 +376,8 @@ class _ReportCompleteScreenState extends State<ReportCompleteScreen> {
                       decoration: BoxDecoration(color: AppColors.surfaceAlt, border: Border.all(color: AppColors.border)),
                       child: Column(
                         children: [
+                          _ActionRow(label: 'Proveri integritet', onTap: () => _openVerify(report.id)),
+                          const Divider(height: 1, color: AppColors.border),
                           _ActionRow(label: 'Pošalji osiguravaču', onTap: _notImplemented),
                           const Divider(height: 1, color: AppColors.border),
                           _ActionRow(label: 'Nazad na početni ekran', onTap: _goHome),

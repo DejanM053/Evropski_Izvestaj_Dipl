@@ -62,4 +62,20 @@ async function anchorReport(reportId32, pdfHash32, bundleHash32) {
   };
 }
 
-module.exports = { provider, contract, checkChain, deriveReportId32, anchorReport };
+// Read-only lookup for verify (§5.5 step 3), via the same read-only
+// `contract` instance `checkChain` uses (no signer needed). The contract's
+// own `getRecord` reverts with "not found" for an id that was never
+// anchored — caught here and turned into `null` rather than propagated, so
+// verify.service.js can treat "not anchored" and "RPC/contract read failed"
+// the same way (report NOT_ANCHORED) without a try/catch of its own.
+async function getOnChainRecord(reportId32) {
+  try {
+    const [pdfHash, bundleHash, timestamp, submitter] = await contract.getRecord(reportId32);
+    if (timestamp === 0n) return null;
+    return { pdfHash, bundleHash, timestamp, submitter };
+  } catch (err) {
+    return null;
+  }
+}
+
+module.exports = { provider, contract, checkChain, deriveReportId32, anchorReport, getOnChainRecord };

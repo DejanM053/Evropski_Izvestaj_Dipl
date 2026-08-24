@@ -200,6 +200,30 @@ mobile-side change was needed for this, `photos_step.dart`'s existing
 local-optimistic/dedupe-by-fileId merge (Phase 7) already treats "fileId is
 in the remote list" as the signal to drop its own optimistic entry.
 
+## Screens 14-15 & verify (Phase 11)
+
+`lib/screens/verify_screen.dart` (14) and `history_screen.dart` (15) have
+no source mockup — screens 14/15 weren't part of the imported design set —
+so both are built from the existing token/widget vocabulary rather than
+copied from an unseen screen, including `AppColors.errorHighlightBg`/
+`successHighlightBg`, which `app_colors.dart` had already reserved back in
+Phase 5 specifically for "the verify screen's hash-diff highlight". Both
+screens share a new `ReportListTile` widget (`lib/widgets/`) for their list
+rows (date, both drivers, both plates, a status chip).
+
+`VerifyScreen` has two entry paths: given a `reportId` it verifies
+immediately; given none (Home's "Provera izveštaja" row) it first shows a
+picker of this device's own sealed reports. `ReportCompleteScreen` (13)
+gained an optional `report` constructor param so `HistoryScreen` can push it
+standalone for a sealed report with no live session left to reconnect to —
+`widget.report ?? context.watch<SessionController>().report` short-circuits,
+so the existing live path (`report` left null) is unchanged and the
+standalone path never needs a `SessionController` in the tree.
+
+`DeviceIdService.getOrCreate()` is now actually wired into
+`ApiClient.createSession`/`joinSession` (both take a required `deviceId`
+param) — see `.claude/rules/backend.md`'s `Report.deviceIds` note.
+
 ## Scope note
 
 Phase 5 was tokens + shared widgets only, with no screens, models, or

@@ -4,6 +4,7 @@ import 'package:mobile_scanner/mobile_scanner.dart';
 
 import '../config/env.dart';
 import '../services/api_client.dart';
+import '../services/device_id_service.dart';
 import '../theme/theme.dart';
 import '../widgets/widgets.dart';
 import 'session_shell_screen.dart';
@@ -78,7 +79,8 @@ class _JoinSessionScreenState extends State<JoinSessionScreen> {
     await _scannerController.stop();
 
     try {
-      final result = await _api.joinSession(code);
+      final deviceId = await DeviceIdService.getOrCreate();
+      final result = await _api.joinSession(code, deviceId: deviceId);
       if (!mounted) return;
       Navigator.of(context).pushReplacement(
         MaterialPageRoute(
