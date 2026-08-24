@@ -312,7 +312,14 @@ class AttachmentHashModel {
 }
 
 class ChainModel {
-  const ChainModel({this.txHash, this.blockNumber, this.contractAddress, this.network, this.anchoredAt});
+  const ChainModel({
+    this.txHash,
+    this.blockNumber,
+    this.contractAddress,
+    this.network,
+    this.anchoredAt,
+    this.lastError,
+  });
 
   final String? txHash;
   final int? blockNumber;
@@ -320,12 +327,20 @@ class ChainModel {
   final String? network;
   final DateTime? anchoredAt;
 
+  /// Mirrors `backend/src/models/Report.js`'s `chain.lastError` (Phase 10):
+  /// set when a finalize attempt's anchor call fails, so a client that
+  /// wasn't connected live for the `report:progress` broadcast (e.g. it
+  /// reconnects after the failure) still sees why finalize is stuck on
+  /// "finalizing". Cleared on a successful anchor.
+  final String? lastError;
+
   factory ChainModel.fromJson(Map<String, dynamic> json) => ChainModel(
         txHash: json['txHash'] as String?,
         blockNumber: json['blockNumber'] as int?,
         contractAddress: json['contractAddress'] as String?,
         network: json['network'] as String?,
         anchoredAt: json['anchoredAt'] == null ? null : DateTime.parse(json['anchoredAt'] as String),
+        lastError: json['lastError'] as String?,
       );
 
   Map<String, dynamic> toJson() => {
@@ -334,6 +349,7 @@ class ChainModel {
         'contractAddress': contractAddress,
         'network': network,
         'anchoredAt': anchoredAt?.toIso8601String(),
+        'lastError': lastError,
       };
 }
 

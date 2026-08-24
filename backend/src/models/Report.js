@@ -102,6 +102,13 @@ const ChainSchema = new mongoose.Schema(
     contractAddress: { type: String, default: null },
     network: { type: String, default: null },
     anchoredAt: { type: Date, default: null },
+    // §5.4 failure handling: if the anchor call fails, the report stays
+    // "finalizing" (never silently sealed) and the error lands here so a
+    // reconnecting client can render it without needing to have been
+    // listening live for the report:progress broadcast. Cleared back to
+    // null at the start of every finalize attempt (fresh or retry) and on
+    // a successful anchor.
+    lastError: { type: String, default: null },
   },
   { _id: false }
 );

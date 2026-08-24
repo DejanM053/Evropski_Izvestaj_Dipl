@@ -62,6 +62,18 @@ class UploadResult {
       UploadResult(fileId: json['fileId'] as String, sha256: json['sha256'] as String);
 }
 
+/// Result of `ApiClient.finalizeReport`. `inProgress: true` means the
+/// backend's per-report in-flight lock rejected this call with `202`
+/// because another request (this device's own retry, or the other party's
+/// client) already owns the pipeline run — [report] is null in that case,
+/// and the caller should rely on `report:progress`/`report:sealed` instead.
+class FinalizeResult {
+  const FinalizeResult({this.report, required this.inProgress});
+
+  final ReportModel? report;
+  final bool inProgress;
+}
+
 class SessionStateResult {
   const SessionStateResult({required this.session, this.report});
 
@@ -209,6 +221,43 @@ class ApiClient {
         },
       );
       return UploadResult.fromJson(res.data!);
+    } on DioException catch (e) {
+      throw ApiException.fromDioException(e);
+    }
+  }
+
+  /// `POST /api/reports/:id/finalize` (docs/master_plan.md §5.2/§5.4, Phase
+  /// 10) — kicks off (or resumes/retries the anchor step of) the finalize
+  /// pipeline. Real progress is driven by `report:progress`/`report:sealed`
+  /// over the socket, not by this call's own response — this is mainly
+  /// "did the request even reach the server", plus a same-tick shortcut for
+  /// whichever client's call is the one that actually ran or found the
+  /// report already sealed (see `SessionController.adoptReport`).
+  Future<FinalizeResult> finalizeReport(String reportId) async {
+    try {
+      final res = await _dio.post<Map<String, dynamic>>(
+        '/api/reports/${Uri.encodeComponent(reportId)}/finalize',
+      );
+      if (res.statusCode == 202) {
+        return const FinalizeResult(inProgress: true);
+      }
+      return FinalizeResult(report: ReportModel.fromJson(res.data!), inProgress: false);
+    } on DioException catch (e) {
+      throw ApiException.fromDioException(e);
+    }
+  }
+
+  /// Downloads a stored file's raw bytes (`GET /api/files/:fileId`) — used
+  /// by the Report complete screen to fetch the sealed PDF before handing
+  /// it to `open_filex`/`share_plus`, since both need a local file path,
+  /// not a URL.
+  Future<Uint8List> downloadFile(String fileId) async {
+    try {
+      final res = await _dio.get<List<int>>(
+        '/api/files/${Uri.encodeComponent(fileId)}',
+        options: Options(responseType: ResponseType.bytes),
+      );
+      return Uint8List.fromList(res.data!);
     } on DioException catch (e) {
       throw ApiException.fromDioException(e);
     }

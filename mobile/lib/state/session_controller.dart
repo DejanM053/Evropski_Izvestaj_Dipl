@@ -25,6 +25,8 @@ class SessionController extends ChangeNotifier {
     _partyStatusSub = _socket.partyStatus.listen(_onPartyStatus);
     _reportPatchedSub = _socket.reportPatched.listen(_onReportPatched);
     _reportLockedSub = _socket.reportLocked.listen((_) => _onReportLocked());
+    _reportProgressSub = _socket.reportProgress.listen(_onReportProgress);
+    _reportSealedSub = _socket.reportSealed.listen(_onReportSealed);
     _errorSub = _socket.errors.listen(_onError);
     _socket.connect(sessionId: sessionId, party: selfParty);
   }
@@ -42,6 +44,8 @@ class SessionController extends ChangeNotifier {
   late final StreamSubscription<PartyStatusEvent> _partyStatusSub;
   late final StreamSubscription<ReportPatchedEvent> _reportPatchedSub;
   late final StreamSubscription<void> _reportLockedSub;
+  late final StreamSubscription<ReportProgressEvent> _reportProgressSub;
+  late final StreamSubscription<ReportSealedEvent> _reportSealedSub;
   late final StreamSubscription<SessionErrorEvent> _errorSub;
 
   SocketConnectionState connectionState = SocketConnectionState.connecting;
@@ -65,6 +69,22 @@ class SessionController extends ChangeNotifier {
   /// user is actively typing into) rather than only knowing that the report
   /// as a whole changed.
   ReportPatchedEvent? lastPatch;
+
+  /// Phase 10: `finalize step key -> 'active'|'done'|'error'`, built up from
+  /// every `report:progress` event seen live over this socket. Deliberately
+  /// *not* the sole source of truth for FinalizingScreen's step list — a
+  /// client that (re)connects mid-pipeline won't have seen the earlier
+  /// events, so screens should cross-check against `report`'s own persisted
+  /// fields (`pdfFileId`, `chain.txHash`, `chain.lastError`) wherever a
+  /// ground-truth field exists, and use this map only for liveliness
+  /// (spinner vs static) and in-flight detail (short SHA, progress bar).
+  Map<String, String> finalizeStepStatus = {};
+
+  /// The most recent finalize error message, from either a live
+  /// `report:progress` `status: "error"` event or (after a reconnect)
+  /// `report.chain.lastError`. FinalizingScreen prefers this live value but
+  /// falls back to the persisted one — see `_onReportProgress`.
+  String? finalizeErrorMessage;
 
   String get otherParty => selfParty == 'A' ? 'B' : 'A';
 
@@ -116,9 +136,53 @@ class SessionController extends ChangeNotifier {
     notifyListeners();
   }
 
+  void _onReportProgress(ReportProgressEvent event) {
+    finalizeStepStatus = {...finalizeStepStatus, event.step: event.status};
+    if (event.status == 'error') {
+      finalizeErrorMessage = event.error;
+    } else if (event.step == 'anchor' && event.status == 'active') {
+      // A fresh anchor attempt starting (e.g. after a manual retry) — clear
+      // any stale error from the previous attempt rather than leaving it
+      // displayed underneath a now-spinning step.
+      finalizeErrorMessage = null;
+    }
+    notifyListeners();
+  }
+
+  // Merges the terminal event's fields onto the local report snapshot for
+  // whichever client *didn't* make the POST that completed the pipeline
+  // (that caller instead adopts the full response body directly — see
+  // `adoptReport`). Applied as individual dot-path patches, same mechanism
+  // `report:patched` already uses, so this stays correct if more fields are
+  // ever added to ReportModel without needing a hand-written merge here.
+  void _onReportSealed(ReportSealedEvent event) {
+    final current = report;
+    if (current != null) {
+      var updated = current.applyPatch('status', 'sealed');
+      updated = updated.applyPatch('pdf.fileId', event.pdfFileId);
+      updated = updated.applyPatch('chain.txHash', event.txHash);
+      updated = updated.applyPatch('chain.blockNumber', event.blockNumber);
+      updated = updated.applyPatch('chain.contractAddress', event.contractAddress);
+      updated = updated.applyPatch('chain.network', event.network);
+      updated = updated.applyPatch('chain.anchoredAt', event.anchoredAt?.toIso8601String());
+      report = updated;
+    }
+    notifyListeners();
+  }
+
   void sendReady(String stage) => _socket.ready(stage);
 
   void sendPatch(String path, dynamic value) => _socket.patch(path, value);
+
+  /// Wholesale-replaces the local report snapshot with one read straight
+  /// from a REST response (`ApiClient.finalizeReport`'s 200 body) — used by
+  /// whichever client's own `POST /finalize` call is the one that actually
+  /// completed (or found the report already sealed), so it doesn't have to
+  /// wait for its own broadcast to come back over the socket.
+  void adoptReport(ReportModel updated) {
+    report = updated;
+    notifyListeners();
+  }
 
   @override
   void dispose() {
@@ -127,6 +191,8 @@ class SessionController extends ChangeNotifier {
     _partyStatusSub.cancel();
     _reportPatchedSub.cancel();
     _reportLockedSub.cancel();
+    _reportProgressSub.cancel();
+    _reportSealedSub.cancel();
     _errorSub.cancel();
     _socket.dispose();
     super.dispose();

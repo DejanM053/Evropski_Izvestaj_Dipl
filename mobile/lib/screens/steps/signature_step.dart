@@ -19,10 +19,11 @@ const _kPadSize = Size(600, 300);
 /// the same full canvas — simpler for the eventual PDF layout (§5.6) than a
 /// tightly-cropped image.
 ///
-/// No `onNext` — this is the last step Phase 8 builds. Once both parties
-/// have submitted, the server locks the report and emits `report:locked`
-/// (`SessionController.isLocked`); what happens after that (Finalizing,
-/// screen 12) is Phase 10.
+/// No `onNext` — this is the last step in the shell's own `IndexedStack`.
+/// Once both parties have submitted, the server locks the report and emits
+/// `report:locked` (`SessionController.isLocked`); `SessionShellScreen`
+/// then swaps its whole body to `FinalizingScreen` (screen 12, Phase 10)
+/// rather than advancing to another step here.
 class SignatureStep extends StatefulWidget {
   const SignatureStep({super.key, required this.reportId});
 

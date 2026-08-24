@@ -168,7 +168,7 @@ describe("Serbian Latin diacritics (č, ć, š, đ, ž)", () => {
   );
 });
 
-describe("GET /api/dev/reports and /api/dev/reports/:id/pdf (temporary, Phase 9)", () => {
+describe("GET /api/reports/:id/pdf (Phase 10 — streams the stored PDF)", () => {
   let app, server;
 
   beforeAll(async () => {
@@ -186,22 +186,13 @@ describe("GET /api/dev/reports and /api/dev/reports/:id/pdf (temporary, Phase 9)
     await Report.deleteMany({});
   });
 
-  it("lists reports newest-first with id/status/plates", async () => {
-    const older = await Report.create({ partyA: { vehicle: { plate: "OLD-1" } } });
-    await new Promise((resolve) => setTimeout(resolve, 5));
-    const newer = await Report.create({ partyA: { vehicle: { plate: "NEW-1" } } });
+  it("streams the stored PDF once one has been generated and saved", async () => {
+    const buffer = await generateReportPdf(await Report.create({}));
+    const pdfFileId = await storage.storeBuffer(buffer, "report.pdf", { contentType: "application/pdf" });
+    const report = await Report.create({ pdf: { fileId: pdfFileId, sha256: "deadbeef", generatedAt: new Date() } });
 
-    const res = await request(app).get("/api/dev/reports");
-    expect(res.status).toBe(200);
-    const ids = res.body.map((r) => r._id);
-    expect(ids.indexOf(newer._id.toString())).toBeLessThan(ids.indexOf(older._id.toString()));
-    expect(res.body.find((r) => r._id === newer._id.toString()).partyAPlate).toBe("NEW-1");
-  });
-
-  it("streams a regenerated PDF for a given report id", async () => {
-    const report = await Report.create({});
     const res = await request(app)
-      .get(`/api/dev/reports/${report._id}/pdf`)
+      .get(`/api/reports/${report._id}/pdf`)
       .buffer(true)
       .parse((res, callback) => {
         const chunks = [];
@@ -214,8 +205,14 @@ describe("GET /api/dev/reports and /api/dev/reports/:id/pdf (temporary, Phase 9)
     expect(isPdf(res.body)).toBe(true);
   });
 
+  it("404s when the report has no stored PDF yet", async () => {
+    const report = await Report.create({});
+    const res = await request(app).get(`/api/reports/${report._id}/pdf`);
+    expect(res.status).toBe(404);
+  });
+
   it("404s for an unknown report id", async () => {
-    const res = await request(app).get(`/api/dev/reports/${new mongoose.Types.ObjectId()}/pdf`);
+    const res = await request(app).get(`/api/reports/${new mongoose.Types.ObjectId()}/pdf`);
     expect(res.status).toBe(404);
   });
 });

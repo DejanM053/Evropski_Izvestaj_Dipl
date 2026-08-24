@@ -48,6 +48,63 @@ class ReportPatchedEvent {
       );
 }
 
+/// `report:progress` (docs/master_plan.md §5.3, Phase 10) — one event per
+/// finalize pipeline step transition (`backend/src/services/finalize.service.js`).
+/// `step` is an opaque key (`validate`/`lock`/`pdf`/`hash`/`store`/
+/// `attachments`/`bundle`/`derive`/`anchor`/`seal`) — same convention as
+/// `PartyStatusEvent.stage`: the server never sends a display label, the
+/// client owns its own copy of what each key means (see FinalizingScreen).
+class ReportProgressEvent {
+  const ReportProgressEvent({required this.step, required this.status, this.error, this.txHash});
+
+  final String step;
+
+  /// `'active'` | `'done'` | `'error'`.
+  final String status;
+  final String? error;
+  final String? txHash;
+
+  factory ReportProgressEvent.fromJson(Map<String, dynamic> json) => ReportProgressEvent(
+        step: json['step'] as String,
+        status: json['status'] as String,
+        error: json['error'] as String?,
+        txHash: json['txHash'] as String?,
+      );
+}
+
+/// `report:sealed` (docs/master_plan.md §5.3, Phase 10) — the finalize
+/// pipeline's final event. Extends the plan's minimal `{pdfFileId, txHash,
+/// blockNumber}` with the rest of the chain record (see
+/// `.claude/rules/backend.md`) so a client that *isn't* the one whose own
+/// `POST /finalize` completed the pipeline can still render the full sealed
+/// state without an extra REST round-trip.
+class ReportSealedEvent {
+  const ReportSealedEvent({
+    required this.pdfFileId,
+    required this.txHash,
+    required this.blockNumber,
+    this.contractAddress,
+    this.network,
+    this.anchoredAt,
+  });
+
+  final String pdfFileId;
+  final String txHash;
+  final int blockNumber;
+  final String? contractAddress;
+  final String? network;
+  final DateTime? anchoredAt;
+
+  factory ReportSealedEvent.fromJson(Map<String, dynamic> json) => ReportSealedEvent(
+        pdfFileId: json['pdfFileId'] as String,
+        txHash: json['txHash'] as String,
+        blockNumber: json['blockNumber'] as int,
+        contractAddress: json['contractAddress'] as String?,
+        network: json['network'] as String?,
+        anchoredAt: json['anchoredAt'] == null ? null : DateTime.parse(json['anchoredAt'] as String),
+      );
+}
+
 class SessionErrorEvent {
   const SessionErrorEvent({required this.code, required this.message});
 
@@ -82,6 +139,8 @@ class SocketClient {
   final _partyStatusController = StreamController<PartyStatusEvent>.broadcast();
   final _reportPatchedController = StreamController<ReportPatchedEvent>.broadcast();
   final _reportLockedController = StreamController<void>.broadcast();
+  final _reportProgressController = StreamController<ReportProgressEvent>.broadcast();
+  final _reportSealedController = StreamController<ReportSealedEvent>.broadcast();
   final _errorController = StreamController<SessionErrorEvent>.broadcast();
 
   Stream<SocketConnectionState> get connectionState => _connectionStateController.stream;
@@ -93,6 +152,12 @@ class SocketClient {
   /// have confirmed review and signed (Phase 8). No payload; screens react
   /// by re-reading `SessionController.isLocked`.
   Stream<void> get reportLocked => _reportLockedController.stream;
+
+  /// `report:progress` (Phase 10) — one per finalize pipeline step transition.
+  Stream<ReportProgressEvent> get reportProgress => _reportProgressController.stream;
+
+  /// `report:sealed` (Phase 10) — the finalize pipeline's terminal event.
+  Stream<ReportSealedEvent> get reportSealed => _reportSealedController.stream;
   Stream<SessionErrorEvent> get errors => _errorController.stream;
 
   /// Connects to [baseUrl] and joins [sessionId] as [party] ('A' or 'B').
@@ -137,6 +202,12 @@ class SocketClient {
       _reportPatchedController.add(ReportPatchedEvent.fromJson((data as Map).cast<String, dynamic>()));
     });
     socket.on('report:locked', (_) => _reportLockedController.add(null));
+    socket.on('report:progress', (data) {
+      _reportProgressController.add(ReportProgressEvent.fromJson((data as Map).cast<String, dynamic>()));
+    });
+    socket.on('report:sealed', (data) {
+      _reportSealedController.add(ReportSealedEvent.fromJson((data as Map).cast<String, dynamic>()));
+    });
     socket.on('session:error', (data) {
       _errorController.add(SessionErrorEvent.fromJson((data as Map).cast<String, dynamic>()));
     });
@@ -172,6 +243,8 @@ class SocketClient {
     _partyStatusController.close();
     _reportPatchedController.close();
     _reportLockedController.close();
+    _reportProgressController.close();
+    _reportSealedController.close();
     _errorController.close();
   }
 }

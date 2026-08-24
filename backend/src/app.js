@@ -7,7 +7,6 @@ const sessionsRouter = require("./routes/sessions");
 const reportsRouter = require("./routes/reports");
 const uploadsRouter = require("./routes/uploads");
 const filesRouter = require("./routes/files");
-const devPdfRouter = require("./routes/dev-pdf"); // TEMPORARY — Phase 9, see dev-pdf.js
 const registerSessionHandlers = require("./sockets/session.socket");
 
 function createApp() {
@@ -24,7 +23,6 @@ function createApp() {
   app.use("/api/reports", reportsRouter);
   app.use("/api/reports", uploadsRouter);
   app.use("/api/files", filesRouter);
-  app.use("/api/dev", devPdfRouter); // TEMPORARY — Phase 9, see dev-pdf.js
 
   app.use((err, req, res, next) => {
     console.error(err);

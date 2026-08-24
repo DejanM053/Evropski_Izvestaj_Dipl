@@ -2,7 +2,15 @@
 
 ## Current phase
 
-Phase 10 — Finalize + anchor + screens 12–13
+Phase 11 — Verify endpoint + screens 14–15
+
+Phase 10 is done: confirmed end to end against a real two-device live run
+(physical phone as party B, the user's own Chrome as party A) — both
+devices reached the Report complete screen showing the same real anchored
+tx hash (`0xa4ef61cb...773f3eb7`, block 3), independently confirmed against
+Mongo and the backend's finalize logs. See Decisions below for a real bug
+this live run surfaced (client never actually called `/finalize`) and its
+fix.
 
 ## Phases (from master_plan.md §8)
 
@@ -16,7 +24,7 @@ Phase 10 — Finalize + anchor + screens 12–13
 - [x] Phase 7 — Screens 5–9 (form, circumstances, sketch, photos)
 - [x] Phase 8 — Screens 10–11 (review + signatures)
 - [x] Phase 9 — PDF generation
-- [ ] Phase 10 — Finalize + anchor + screens 12–13
+- [x] Phase 10 — Finalize + anchor + screens 12–13
 - [ ] Phase 11 — Verify endpoint + screens 14–15
 - [ ] Phase 12 — Testnet deploy + README + demo script
 
@@ -760,7 +768,202 @@ Phase 10 — Finalize + anchor + screens 12–13
     content stream). Rebuilt and recreated the `backend` container again;
     sent the user a freshly regenerated preview.
 
-## Known issues
+- **Phase 10** — `services/finalize.service.js`, `services/chain.service.js`,
+  `POST /api/reports/:id/finalize`, `GET /api/reports/:id/pdf`, and mobile
+  screens 12–13 (docs/master_plan.md §5.4/§6).
+  - **`reportId32` derivation**: `chain.service.js`'s `deriveReportId32(reportId)`
+    is `ethers.id(String(reportId))` — i.e. `keccak256(utf8Bytes(<24-char hex
+    Mongo ObjectId string>))`. Considered the alternative of left-padding the
+    raw 12 ObjectId bytes out to 32 (`ethers.zeroPadValue`) but rejected it:
+    that needs both sides of a later verify call (Phase 11) to agree on byte
+    order/padding side with no on-chain-specific knowledge to check it
+    against, whereas hashing the id's own string form is exactly what
+    `String(reportId)` already produces everywhere else in this codebase
+    (`console.log`, JSON responses, the mobile `ReportModel.id`), so verify
+    only ever needs "the report's id as a string" to reproduce the same
+    bytes32, nothing chain-specific. Documented again in
+    `.claude/rules/backend.md`.
+  - **Finalize pipeline is one function, `runFinalize(reportId, io)`**, not
+    split per §5.4 step — steps share too much local state (the report
+    document, the session, the derived hashes) to usefully separate, and the
+    ordering/rollback behavior (stop and persist an error on step 9 failure,
+    skip 3-7 on a retry) only makes sense read as one sequence. Each step
+    still gets its own `console.log("[finalize:<step>] <status>")` line and
+    `report:progress` broadcast, per the task's "log each step distinctly."
+  - **Retry re-uses the same `POST /finalize` endpoint** rather than a
+    separate route — docs/master_plan.md §5.2 only lists the one endpoint,
+    and the pipeline already has to inspect `report.status` to decide
+    fresh-vs-resume regardless, so a second endpoint would just be another
+    caller of the same status-branching logic. `runFinalize` distinguishes:
+    `"sealed"` → no-op success; `"signing"` → full pipeline; `"finalizing"`
+    with `pdf.fileId`+`bundleHash` already stored → anchor-only retry (steps
+    8-10); `"finalizing"` without a stored PDF (a process died before
+    anything durable saved) → full pipeline again; anything else → `409`.
+  - **Concurrency**: a per-report in-memory `Set` in `finalize.service.js`
+    serializes `runFinalize` calls for the same report within this one Node
+    process (no clustering per docker-compose §7) — both parties' clients
+    auto-trigger finalize on reaching screen 12, so this is expected to
+    happen almost every time, not an edge case. The loser gets a `202
+    {status: "finalizing"}` instead of running a second concurrent pipeline
+    (which would double-generate the PDF, or send two `anchor()` transactions
+    racing for the same nonce). Not a durable/distributed lock — acceptable
+    for a single-backend-instance bachelor-thesis deployment, called out
+    explicitly in `.claude/rules/backend.md` so it isn't mistaken for one if
+    this ever gets containerized to multiple replicas.
+  - **`chain.service.js`'s write-capable contract is built lazily**
+    (`getSignerContract()`, memoized on first call), not at module load like
+    the existing read-only `provider`/`contract` were. `config.PRIVATE_KEY`
+    is a syntactically-present-but-cryptographically-invalid all-zeros
+    placeholder in both `.env.example` and `test/setupEnv.js`, and
+    `ethers.Wallet` throws immediately for that value — every route
+    (health/sessions/reports/uploads/sockets) requires `chain.service.js`
+    transitively through `app.js`, so eager construction would have crashed
+    the entire test suite the moment this phase's code was required, not
+    just an actual finalize call. Verified this explicitly: `node -e
+    "require('./src/app')"` with the placeholder key still loads cleanly.
+  - **`backend/.env`'s `PRIVATE_KEY` updated from the all-zero placeholder to
+    Hardhat's well-known default account #0 key**
+    (`0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80`,
+    address `0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266`) — this is the same
+    publicly-documented throwaway key every `npx hardhat node` prints, not a
+    real secret, and it's also the deployer whose deterministic first
+    contract deployment already matches the `CONTRACT_ADDRESS` that was
+    already sitting in `.env`. `.env.example` is untouched (stays the
+    placeholder, per its own "for local Hardhat dev, use one of the funded
+    test account keys" comment — the user copies/fills it in themselves).
+  - **`report:sealed`'s payload is extended** beyond §5.3's minimal
+    `{pdfFileId, txHash, blockNumber}` to also carry `contractAddress`,
+    `network`, and `anchoredAt` — so *every* connected client (not just
+    whichever one's own `POST /finalize` happened to complete the pipeline)
+    can render the full sealed state on screen 13 without a follow-up REST
+    call. A new `report:progress` event (`{step, status, error?, txHash?,
+    skipped?}`) was also added, not in the original §5.3 table at all, since
+    "step-by-step progress driven by real server events" has no other
+    mechanism to ride on. Both documented in `.claude/rules/backend.md`.
+  - **`GET /api/reports/:id/pdf` replaces the temporary Phase 9 dev route**
+    (`routes/dev-pdf.js`, deleted along with its `app.js` mount) exactly as
+    that file's own comment said it should once Phase 10 landed — it streams
+    the *stored* PDF from GridFS (404 if `pdf.fileId` isn't set yet) rather
+    than regenerating on every request. `pdf.test.js`'s dev-route describe
+    block was rewritten against this real route instead of deleted outright,
+    keeping equivalent coverage (stream succeeds once stored, 404 with no
+    stored PDF, 404 for an unknown id).
+  - **Mobile: Finalizing/Report-complete are a conditional swap inside
+    `SessionShellScreen`'s existing body, not new pushed routes or new
+    `IndexedStack` steps.** The source design (screens "1k"/"1l") renders
+    both full-bleed with their own header treatment, not nested under the
+    shell's `SessionProgressHeader`/`_StepHeaderBar` chrome — but routing
+    away with `Navigator.push` would tear down the `ChangeNotifierProvider`
+    that owns the live `SessionController`/socket, and recreating a second
+    `SessionController` for the same session was exactly the
+    two-overlapping-sockets bug from Phase 6 (see that phase's note above).
+    Instead `_SessionShellBodyState.build()` just returns a different widget
+    tree once `isLocked`/`status == "sealed"`, keeping the same controller
+    instance alive across the transition for free. This also let the old
+    Phase 8 "jump to Review once locked, so there's a well-known place to
+    land" hack (`_maybeJumpToReviewOnLock`/`_kReviewStepIndex`) be deleted
+    outright — the real destination (Finalizing) now exists, so there's
+    nothing left to work around, and the old `_LockedBanner` + dimmed
+    `IgnorePointer`-wrapped `IndexedStack` (Phase 8) is dead code once
+    "locked" always means "showing a completely different screen" rather
+    than "showing the same form, disabled."
+  - **FinalizingScreen derives each step row's done/active/error state
+    primarily from the report's own persisted fields** (`pdfFileId`,
+    `chain.txHash`, `chain.lastError`), using the live `report:progress`
+    event map (`SessionController.finalizeStepStatus`) only for in-flight
+    flavor (spinner vs. static icon, the short-SHA hint text, the progress
+    bar fraction) — not as the sole source of truth. A client that reaches
+    this screen via a reconnect (having missed every earlier event) still
+    renders correctly instead of showing every row stuck on "pending."
+    Symmetrically, the backend replays the skipped steps (`lock` through
+    `bundle`) as instantly-`"done"` `skipped: true` events on an anchor-only
+    retry, so a client that *is* listening live doesn't see them go
+    silent either.
+  - **Auto-start, not a manual "Finalize" button**: `FinalizingScreen` POSTs
+    `/finalize` once on mount whenever `report.status == "signing"`, or
+    `"finalizing"` with no recorded error yet (covers a client reconnecting
+    mid-pipeline before any failure happened — safe, the backend's in-flight
+    lock just no-ops it if another request already owns the run). A
+    `"finalizing"` report that *does* have `chain.lastError` set is
+    deliberately **not** auto-retried — that needs an explicit "Pokušaj
+    ponovo" tap, so a persistently-failing chain (e.g. RPC down) doesn't spin
+    silently forever in the background.
+  - **Screen 13's "Preuzmi"/"Otvori PDF"/"Podeli" collapsed to two actions**
+    ("Otvori PDF" and "Podeli," matching the task's "preview/open/share"),
+    not the design mockup's three ("Preuzmi", "Otvori PDF ›" link, "Podeli").
+    The stack has no save-to-Downloads package (master_plan.md §2 names only
+    `open_filex`, not a storage/save library), and "Preuzmi" downloading to
+    the same app-temp file `open_filex` then opens wouldn't be a
+    meaningfully different action from "Otvori PDF" — both download once
+    (`ApiClient.downloadFile` against the existing `GET /api/files/:fileId`,
+    cached in `_localPdfPath` so a second tap doesn't re-download) and hand
+    the same local file to either `OpenFilex.open` or `share_plus`'s
+    `SharePlus.instance.share`. Added `share_plus` (^13.3.0 — `^11.1.0` was
+    tried first per the task's package list, but its `share_plus_platform_interface`
+    pins `win32 ^5.5.3`, which conflicts with `geolocator`'s existing
+    `package_info_plus`/`win32 ^6.0.1` chain; 13.3.0 was the version `flutter
+    pub get`'s own resolver suggested and still has the `SharePlus.instance.share(ShareParams(...))`
+    API, confirmed introduced in 11.0.0) and `path_provider`/`open_filex`/
+    `url_launcher` (all three already named in master_plan.md §2's key
+    package list) to `mobile/pubspec.yaml`.
+  - **Block-explorer link** only renders when `report.chain.network` (set
+    from the backend's `CHAIN_NETWORK` at anchor time) matches a small known
+    map of public testnets (`sepolia`, `amoy`/`polygon-amoy`) — anything else
+    (`localhost`/`hardhat`, the only network actually configured for local
+    dev right now) shows no link, satisfying "when CHAIN_NETWORK is a public
+    testnet" without needing a hardcoded assumption about which testnet this
+    demo ends up using (hardhat.config.js currently only has a `sepolia`
+    network entry, but master_plan.md §2 allows either).
+  - **Report id display deviates from the mockup's decorative "EI-2026-08-4471"
+    numbering** — no such formatted-id scheme exists anywhere in the backend
+    (§5.1's `Report._id` is a plain Mongo ObjectId), so inventing one just
+    for this screen would be presentation-only fiction. Shows `#<last 6 hex
+    chars of the ObjectId, uppercased>` instead — short, stable, and doesn't
+    imply a numbering scheme the backend doesn't actually have.
+  - Verified with automated tests only this round, not a live two-device
+    run — the user is doing that themselves per their own request (see
+    "Current phase" above). `backend/test/finalize.test.js` mocks
+    `chain.service`'s `anchorReport`/`deriveReportId32` (`jest.mock`) so the
+    pipeline's own state machine — gating, step ordering, the anchor-only
+    retry not regenerating the PDF, idempotency once sealed — is covered
+    without needing a live Hardhat node in CI; the real end-to-end anchor
+    (contract layer itself already covered by `blockchain/test/registry.test.js`)
+    is exactly what the live run verifies. `npm test` (53 tests, 4 suites),
+    `flutter analyze` (no issues), `flutter test`, and `flutter build apk
+    --debug` all green as of this update.
+  - **Live two-device run surfaced a real bug: `FinalizingScreen` never
+    actually called `POST /finalize`.** The user reported the Finalizing
+    screen stuck on "PDF generisan"; the backend's finalize logs showed
+    nothing since the container started except an earlier synthetic smoke
+    test, and the actual live report was confirmed sitting at
+    `status: "signing"` with `pdf.fileId: null` in Mongo — i.e. the request
+    genuinely never left the client, not a slow/failed request. Root cause:
+    `_maybeAutoStart` gated on `controller.report?.status == 'signing'`, but
+    `report.status` is **not** kept live-synced on the client — the
+    `report:locked` event that gets this screen on-screen at all carries no
+    payload (`.claude/rules/backend.md`) and only flips the separate
+    `SessionController.isLocked` boolean; `status` itself is server-
+    controlled and never goes through `report:patched`
+    (`classifyPatchPath` rejects it), so it only ever updates from a full
+    `session:state` resync (join/reconnect) or the `report:sealed` handler.
+    In a live (non-reconnect) session it just sits stale at whatever it was
+    *before* locking, so the `== 'signing'` check never matched and
+    `_start()` was silently never called — which also explains the exact
+    visible symptom: row 2 ("PDF generisan") has no real pending state
+    (only done/active), so with `pdfFileId` never set it just spun forever,
+    looking exactly like a hung PDF generation step rather than a request
+    that was never sent. Fixed by gating on `isLocked` (the one flag that
+    *is* reliably live-synced via its own dedicated event) plus "no known
+    error yet" instead of the specific status string — this screen only
+    ever renders once `isLocked` is already true (`SessionShellScreen`), so
+    there's no need to distinguish "signing" from "finalizing" here at all.
+    Verified the fix by rebuilding and reinstalling on the physical phone
+    (`flutter run -d <device>`) against the *same* already-locked, already-
+    signed report from the stuck attempt — it picked up immediately on
+    relaunch and sealed for real: report `6a8c4120...c7cdd` (`#3C7CDD`),
+    tx `0xa4ef61cb...773f3eb7`, block 3, 4 attachments hashed (sketch +
+    1 photo + both signatures), confirmed independently against both the
+    backend's `[finalize:*]` logs and the sealed Mongo document.
 
 - `GET /api/reports?deviceId=` doesn't filter — no `deviceId` field exists
   anywhere in §5.1's schemas yet. Needs a schema decision before the mobile
