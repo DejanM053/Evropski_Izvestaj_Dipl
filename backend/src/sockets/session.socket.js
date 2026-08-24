@@ -7,6 +7,7 @@ const {
   ReportLockedError,
 } = require("../services/report-guard.service");
 const { maybeLockReport, partySignedOff } = require("../services/report-lock.service");
+const { withReportLock } = require("../services/report-mutex.service");
 
 function emitError(socket, code, message) {
   socket.emit("session:error", { code, message });
@@ -80,38 +81,55 @@ function registerSessionHandlers(io) {
         if (LOCKED_STATUSES.includes(session.status)) {
           return emitError(socket, "SESSION_LOCKED", `cannot patch while status is "${session.status}"`);
         }
+        if (!session.reportId) return emitError(socket, "REPORT_NOT_FOUND", "report not found");
 
-        const report = await Report.findById(session.reportId);
-        if (!report) return emitError(socket, "REPORT_NOT_FOUND", "report not found");
-        assertReportNotSealed(report);
+        // Serialized per report (report-mutex.service.js): a burst of
+        // concurrent patches for the same report — e.g. the mobile app's
+        // "fill sample data" button, which fires ~18 patches back-to-back
+        // with no pacing — otherwise races each patch's own independent
+        // fetch→set→save cycle against the others. Found via a live report
+        // where partyA.vehicle ended up missing entirely and
+        // partyA.insurer had only its last-patched field, with no error
+        // anywhere: concurrent patches into different leaves of the same
+        // not-yet-existing nested subdocument (e.g. partyA.vehicle.make and
+        // partyA.vehicle.model, before partyA.vehicle exists) each mark the
+        // *whole parent path* dirty rather than just their own leaf, so
+        // their saves silently clobber each other. Serializing the whole
+        // fetch-through-broadcast sequence per report closes this
+        // regardless of the exact Mongoose mechanics behind it.
+        await withReportLock(session.reportId, async () => {
+          const report = await Report.findById(session.reportId);
+          if (!report) return emitError(socket, "REPORT_NOT_FOUND", "report not found");
+          assertReportNotSealed(report);
 
-        // A party's own subtree freezes the instant *they've* signed off
-        // (confirmedReview + a stored signature), rather than waiting for
-        // the other party too — narrows the "confirm/sign, then quietly
-        // edit before the other party finishes" window discussed with the
-        // user. Shared subtrees (accident.*/sketch) deliberately stay open
-        // until the whole report locks (maybeLockReport, both parties) —
-        // they're joint by design, and freezing them on one party's
-        // signature would block the other party's own legitimate edits
-        // before they've even reviewed/signed.
-        if (classification.scope === "party" && partySignedOff(report, classification.party)) {
-          return emitError(
-            socket,
-            "PARTY_LOCKED",
-            `party ${classification.party} has already signed and cannot edit further`
-          );
-        }
+          // A party's own subtree freezes the instant *they've* signed off
+          // (confirmedReview + a stored signature), rather than waiting for
+          // the other party too — narrows the "confirm/sign, then quietly
+          // edit before the other party finishes" window discussed with the
+          // user. Shared subtrees (accident.*/sketch) deliberately stay open
+          // until the whole report locks (maybeLockReport, both parties) —
+          // they're joint by design, and freezing them on one party's
+          // signature would block the other party's own legitimate edits
+          // before they've even reviewed/signed.
+          if (classification.scope === "party" && partySignedOff(report, classification.party)) {
+            return emitError(
+              socket,
+              "PARTY_LOCKED",
+              `party ${classification.party} has already signed and cannot edit further`
+            );
+          }
 
-        report.set(path, value);
-        await report.save();
+          report.set(path, value);
+          await report.save();
 
-        io.to(sessionId).emit("report:patched", { path, value, by: party });
+          io.to(sessionId).emit("report:patched", { path, value, by: party });
 
-        // Cheap idempotent check (Phase 8): a patch into partyA/partyB can be
-        // the one that completes "both confirmed review + both signed" (e.g.
-        // Review screen's confirmedReview patch), so re-check after every
-        // accepted patch rather than trying to filter to just that path.
-        await maybeLockReport(report, session, io);
+          // Cheap idempotent check (Phase 8): a patch into partyA/partyB can be
+          // the one that completes "both confirmed review + both signed" (e.g.
+          // Review screen's confirmedReview patch), so re-check after every
+          // accepted patch rather than trying to filter to just that path.
+          await maybeLockReport(report, session, io);
+        });
       } catch (err) {
         if (err instanceof SealedReportError || err instanceof ReportLockedError) {
           return emitError(socket, err.code, err.message);

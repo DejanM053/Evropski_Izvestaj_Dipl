@@ -10,15 +10,32 @@ import '../models/verify_result_model.dart';
 /// Thrown for any failed request. `statusCode` is null for network-level
 /// failures (no response at all — host unreachable, timeout).
 class ApiException implements Exception {
-  ApiException(this.message, {this.statusCode});
+  ApiException(this.message, {this.statusCode, this.isTimeout = false});
 
   final String message;
   final int? statusCode;
 
+  /// True for a client-side connect/send/receive timeout specifically (as
+  /// opposed to a real server-reported failure, or the connection being
+  /// refused outright). Callers on a long-running request that keeps
+  /// running server-side regardless of whether this client is still
+  /// listening — e.g. `finalizeReport`, whose HTTP response doesn't return
+  /// until a real chain anchor confirms — use this to avoid surfacing a
+  /// scary "request took longer than expected" banner for something that
+  /// isn't actually a failure.
+  final bool isTimeout;
+
   factory ApiException.fromDioException(DioException e) {
     final data = e.response?.data;
     final serverMessage = data is Map && data['error'] is String ? data['error'] as String : null;
-    return ApiException(serverMessage ?? e.message ?? 'Network error', statusCode: e.response?.statusCode);
+    final isTimeout = e.type == DioExceptionType.connectionTimeout ||
+        e.type == DioExceptionType.sendTimeout ||
+        e.type == DioExceptionType.receiveTimeout;
+    return ApiException(
+      serverMessage ?? e.message ?? 'Network error',
+      statusCode: e.response?.statusCode,
+      isTimeout: isTimeout && serverMessage == null,
+    );
   }
 
   @override
@@ -241,10 +258,21 @@ class ApiClient {
   /// "did the request even reach the server", plus a same-tick shortcut for
   /// whichever client's call is the one that actually ran or found the
   /// report already sealed (see `SessionController.adoptReport`).
+  // Longer receive timeout than the client's 8s default: this request's
+  // HTTP response doesn't return until the whole finalize pipeline
+  // completes server-side (routes/reports.js awaits runFinalize() before
+  // responding), including a real on-chain anchor confirmation — on a
+  // public testnet that alone can take 20-40+ seconds (see
+  // finalizing_screen.dart's own hint text), well past a typical REST
+  // call's timeout. 90s covers that with margin; on local Hardhat (anchors
+  // instantly) this is never actually reached.
+  static const _finalizeTimeout = Duration(seconds: 90);
+
   Future<FinalizeResult> finalizeReport(String reportId) async {
     try {
       final res = await _dio.post<Map<String, dynamic>>(
         '/api/reports/${Uri.encodeComponent(reportId)}/finalize',
+        options: Options(sendTimeout: _finalizeTimeout, receiveTimeout: _finalizeTimeout),
       );
       if (res.statusCode == 202) {
         return const FinalizeResult(inProgress: true);

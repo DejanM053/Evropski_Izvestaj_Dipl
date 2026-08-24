@@ -62,7 +62,6 @@ class AppColors {
 
   // Illustration-only (sketch canvas, photo placeholders, QR scanner) — kept
   // as tokens so Phase 7's sketch/photos screens don't need to inline hex.
-  static const illustrationRoad = Color(0xFFDEDAD0);
   static const illustrationStripeA = Color(0xFFD6D2C6);
   static const illustrationStripeB = Color(0xFFE6E2D8);
   static const scannerBg = Color(0xFF22262E);

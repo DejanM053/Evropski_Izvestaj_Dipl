@@ -314,7 +314,7 @@ class _MyDetailsStepState extends State<MyDetailsStep> {
                         const SizedBox(width: AppSpacing.sm),
                         Expanded(
                           child: PatchTextField(
-                            label: 'Broj zel. karte',
+                            label: 'Zeleni karton',
                             path: '$party.insurer.greenCardNumber',
                             remoteValue: own.insurer.greenCardNumber,
                             onPatch: _patch,

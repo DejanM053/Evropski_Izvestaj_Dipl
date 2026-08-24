@@ -22,15 +22,35 @@ class _SketchItem {
   double rotation = 0;
 }
 
-const _kCanvasSize = Size(320, 320);
+// Fixed at a 2:1 ratio, matching the diagram box on the real European
+// Accident Statement (not the screen's own size — see the AspectRatio +
+// FittedBox wrapping in build(), which scales this fixed logical canvas to
+// fit whatever width is available without ever changing its proportions or
+// the coordinate space item positions/strokes are stored in). 12x6 grid
+// cells fall out of this evenly (400/12 == 200/6).
+const _kCanvasSize = Size(400, 200);
+const _kGridColumns = 12;
+const _kGridRows = 6;
 
 /// Screen 8 (docs/master_plan.md §6) — the scene sketch: draggable/rotatable
-/// car icons + an impact marker on a road outline, exported to PNG on save
-/// (matches design "1g": grid background, crossing road strips, dashed
-/// center lines, "SEVER ↑ · lat, lng" caption bottom-right). Freehand
-/// drawing is layered on top as a bonus per the Phase 7 task brief ("if not
-/// too complicated") — a pencil toggle switches the canvas gesture between
-/// arranging icons and drawing strokes so the two don't fight over drags.
+/// car icons + an impact marker on a dotted-grid canvas, exported to PNG on
+/// save. Freehand drawing is layered on top as a bonus per the Phase 7 task
+/// brief ("if not too complicated") — a pencil toggle switches the canvas
+/// gesture between arranging icons and drawing strokes so the two don't
+/// fight over drags.
+///
+/// Only the session creator (party A) gets this interactive canvas — party B
+/// sees a read-only view of whatever A has drawn (or a waiting placeholder
+/// if A hasn't drawn yet). This is deliberate, not a missing feature: the
+/// sketch only round-trips as a flattened PNG (there's no persisted
+/// vector/structured state to load back into an editable canvas), so
+/// whichever party reached this step *second* would otherwise silently
+/// overwrite the first party's sketch with their own from-scratch blank
+/// canvas the moment they saved — a real bug found during live testing (see
+/// PROGRESS.md). Restricting editing to one deterministic party removes the
+/// possibility entirely, and mirrors how the physical paper form actually
+/// works: one person's pen touches the shared diagram box while both look
+/// at it together, not two independent edits merged after the fact.
 class SketchStep extends StatefulWidget {
   const SketchStep({super.key, required this.reportId, required this.onNext});
 
@@ -58,9 +78,9 @@ class _SketchStepState extends State<SketchStep> {
   }
 
   List<_SketchItem> _defaultItems() => [
-        _SketchItem(kind: _ItemKind.carA, position: const Offset(130, 110)),
-        _SketchItem(kind: _ItemKind.carB, position: const Offset(190, 210)),
-        _SketchItem(kind: _ItemKind.impact, position: const Offset(160, 160)),
+        _SketchItem(kind: _ItemKind.carA, position: const Offset(150, 70)),
+        _SketchItem(kind: _ItemKind.carB, position: const Offset(250, 130)),
+        _SketchItem(kind: _ItemKind.impact, position: const Offset(200, 100)),
       ];
 
   void _reset() {
@@ -148,7 +168,14 @@ class _SketchStepState extends State<SketchStep> {
 
   @override
   Widget build(BuildContext context) {
-    final accident = context.watch<SessionController>().report?.accident;
+    final controller = context.watch<SessionController>();
+    final isDrawer = controller.selfParty == 'A';
+
+    if (!isDrawer) {
+      return _ReadOnlySketchView(sketchFileId: controller.report?.sketchFileId, onNext: widget.onNext);
+    }
+
+    final accident = controller.report?.accident;
     final coords = accident?.location.lat != null && accident?.location.lng != null
         ? '${accident!.location.lat!.toStringAsFixed(4)}, ${accident.location.lng!.toStringAsFixed(4)}'
         : null;
@@ -156,7 +183,7 @@ class _SketchStepState extends State<SketchStep> {
     return Column(
       children: [
         Expanded(
-          child: SingleChildScrollView(
+          child: Padding(
             padding: const EdgeInsets.all(AppSpacing.lg),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -184,35 +211,53 @@ class _SketchStepState extends State<SketchStep> {
                   ],
                 ),
                 const SizedBox(height: AppSpacing.sm),
-                RepaintBoundary(
-                  key: _repaintKey,
-                  child: Container(
-                    width: _kCanvasSize.width,
-                    height: _kCanvasSize.height,
-                    decoration: BoxDecoration(color: AppColors.surfaceMuted, border: Border.all(color: AppColors.border)),
-                    child: ClipRect(
-                      child: GestureDetector(
-                        behavior: HitTestBehavior.opaque,
-                        onPanStart: _drawMode ? (d) => setState(() => _strokes.add([d.localPosition])) : null,
-                        onPanUpdate: _drawMode
-                            ? (d) => setState(() => _strokes.isNotEmpty ? _strokes.last.add(d.localPosition) : null)
-                            : null,
-                        child: CustomPaint(
-                          size: _kCanvasSize,
-                          painter: _RoadPainter(coords: coords),
-                          foregroundPainter: _StrokesPainter(_strokes),
-                          child: Stack(
-                            children: [
-                              for (final item in _items)
-                                _DraggableSketchItem(
-                                  key: ObjectKey(item),
-                                  item: item,
-                                  interactive: !_drawMode,
-                                  canvasKey: _repaintKey,
-                                  onDrag: (delta) => _onItemDrag(item, delta),
-                                  onRotate: (pos) => _onItemRotate(item, pos),
+                // Expanded + AspectRatio (rather than the scrollable layout
+                // this step used to have) keeps the canvas fixed at exactly
+                // 2:1 and responsive to available space, and — just as
+                // importantly — means there's no ancestor Scrollable for the
+                // canvas's own pan gesture to lose a gesture-arena contest
+                // against on a touch device (that was the root cause of
+                // "trying to draw just scrolls the page" on phones).
+                Expanded(
+                  child: Center(
+                    child: AspectRatio(
+                      aspectRatio: _kCanvasSize.width / _kCanvasSize.height,
+                      child: FittedBox(
+                        fit: BoxFit.contain,
+                        child: RepaintBoundary(
+                          key: _repaintKey,
+                          child: Container(
+                            width: _kCanvasSize.width,
+                            height: _kCanvasSize.height,
+                            decoration:
+                                BoxDecoration(color: AppColors.surfaceMuted, border: Border.all(color: AppColors.border)),
+                            child: ClipRect(
+                              child: GestureDetector(
+                                behavior: HitTestBehavior.opaque,
+                                onPanStart: _drawMode ? (d) => setState(() => _strokes.add([d.localPosition])) : null,
+                                onPanUpdate: _drawMode
+                                    ? (d) => setState(() => _strokes.isNotEmpty ? _strokes.last.add(d.localPosition) : null)
+                                    : null,
+                                child: CustomPaint(
+                                  size: _kCanvasSize,
+                                  painter: _GridPainter(coords: coords),
+                                  foregroundPainter: _StrokesPainter(_strokes),
+                                  child: Stack(
+                                    children: [
+                                      for (final item in _items)
+                                        _DraggableSketchItem(
+                                          key: ObjectKey(item),
+                                          item: item,
+                                          interactive: !_drawMode,
+                                          canvasKey: _repaintKey,
+                                          onDrag: (delta) => _onItemDrag(item, delta),
+                                          onRotate: (pos) => _onItemRotate(item, pos),
+                                        ),
+                                    ],
+                                  ),
                                 ),
-                            ],
+                              ),
+                            ),
                           ),
                         ),
                       ),
@@ -273,6 +318,98 @@ class _SketchStepState extends State<SketchStep> {
   }
 }
 
+/// What party B sees instead of the editable canvas — see the class doc on
+/// [SketchStep] for why only party A draws. Purely reactive: `report` is
+/// already live-synced via SessionController, so this switches from the
+/// waiting placeholder to the actual image the moment party A saves, with
+/// no polling.
+class _ReadOnlySketchView extends StatelessWidget {
+  const _ReadOnlySketchView({required this.sketchFileId, required this.onNext});
+
+  final String? sketchFileId;
+  final VoidCallback onNext;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        Expanded(
+          child: Padding(
+            padding: const EdgeInsets.all(AppSpacing.lg),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(
+                  'Vozač A crta skicu nezgode. Ovde ćete videti šta je nacrtano.',
+                  style: AppTypography.bodyMedium.copyWith(color: AppColors.textSecondary),
+                ),
+                const SizedBox(height: AppSpacing.sm),
+                Expanded(
+                  child: Center(
+                    child: AspectRatio(
+                      aspectRatio: _kCanvasSize.width / _kCanvasSize.height,
+                      child: sketchFileId == null
+                          ? const _WaitingForSketchPlaceholder()
+                          : Container(
+                              decoration: BoxDecoration(
+                                color: AppColors.surfaceMuted,
+                                border: Border.all(color: AppColors.border),
+                              ),
+                              child: Image.network(
+                                '${Env.apiUrl}/api/files/$sketchFileId',
+                                fit: BoxFit.contain,
+                                errorBuilder: (context, error, stack) =>
+                                    const Center(child: Icon(Icons.broken_image_outlined, color: AppColors.textMuted)),
+                              ),
+                            ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        Container(
+          padding: const EdgeInsets.all(AppSpacing.lg),
+          decoration: const BoxDecoration(
+            color: AppColors.surface,
+            border: Border(top: BorderSide(color: AppColors.border)),
+          ),
+          child: AppButton(label: 'Dalje', onPressed: onNext),
+        ),
+      ],
+    );
+  }
+}
+
+class _WaitingForSketchPlaceholder extends StatelessWidget {
+  const _WaitingForSketchPlaceholder();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(color: AppColors.pendingBg, border: Border.all(color: AppColors.pendingBorder)),
+      child: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(AppSpacing.lg),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.hourglass_empty, color: AppColors.pendingText),
+              const SizedBox(height: AppSpacing.sm),
+              Text(
+                'Vozač A još nije nacrtao skicu.',
+                style: AppTypography.bodySmall.copyWith(color: AppColors.pendingText),
+                textAlign: TextAlign.center,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _ToolButton extends StatelessWidget {
   const _ToolButton({required this.label, required this.color, required this.onTap});
 
@@ -326,6 +463,20 @@ class _DraggableSketchItem extends StatelessWidget {
   static const _size = Size(40, 40);
   static const _handleOffset = Offset(24, -24);
 
+  // The outer hit-testable/layout box for this item — deliberately much
+  // bigger than the icon itself (_size). A Positioned ancestor's hit-test
+  // rejects any pointer position outside its own declared width/height
+  // *before* it ever tries the children inside it (RenderBox.hitTest's
+  // `size.contains(position)` check) — so when the old code sized this box
+  // to exactly _size (40x40) and only *painted* the rotate handle outside
+  // those bounds (via clipBehavior: Clip.none), the handle was visible but
+  // not reliably tappable: most of its visible area sat outside the
+  // hit-testable region. _boundsSize is sized to comfortably contain the
+  // handle's full swept circle around the icon at any rotation angle
+  // (icon center to handle-corner distance is ~45px at most), fixing the
+  // "rotation handle doesn't work at all" bug rather than working around it.
+  static const _boundsSize = Size(112, 112);
+
   void _handleRotateDrag(DragUpdateDetails details) {
     final box = canvasKey.currentContext?.findRenderObject();
     if (box is! RenderBox) return;
@@ -335,26 +486,32 @@ class _DraggableSketchItem extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Positioned(
-      left: item.position.dx - _size.width / 2,
-      top: item.position.dy - _size.height / 2,
-      width: _size.width,
-      height: _size.height,
+      left: item.position.dx - _boundsSize.width / 2,
+      top: item.position.dy - _boundsSize.height / 2,
+      width: _boundsSize.width,
+      height: _boundsSize.height,
       child: Transform.rotate(
         angle: item.rotation,
         child: Stack(
           clipBehavior: Clip.none,
-          alignment: Alignment.center,
           children: [
-            GestureDetector(
-              behavior: HitTestBehavior.opaque,
-              onPanUpdate: interactive ? (d) => onDrag(d.delta) : null,
-              child: _ItemIcon(kind: item.kind),
+            Positioned(
+              left: (_boundsSize.width - _size.width) / 2,
+              top: (_boundsSize.height - _size.height) / 2,
+              width: _size.width,
+              height: _size.height,
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onPanUpdate: interactive ? (d) => onDrag(d.delta) : null,
+                child: _ItemIcon(kind: item.kind),
+              ),
             ),
             if (interactive && item.kind != _ItemKind.impact)
               Positioned(
-                left: _size.width / 2 + _handleOffset.dx - 8,
-                top: _size.height / 2 + _handleOffset.dy - 8,
+                left: _boundsSize.width / 2 + _handleOffset.dx - 8,
+                top: _boundsSize.height / 2 + _handleOffset.dy - 8,
                 child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
                   onPanUpdate: _handleRotateDrag,
                   child: Container(
                     width: 16,
@@ -458,13 +615,13 @@ class _CarIcon extends StatelessWidget {
   }
 }
 
-/// The road-outline background (grid + crossing strips + dashed center
-/// lines + "SEVER ↑" coordinate caption) from design "1g", drawn once as a
-/// painter rather than nested Positioned/Container divs like the mockup's
-/// own HTML — cheaper to repaint and it's what gets captured into the PNG
-/// export alongside the draggable items.
-class _RoadPainter extends CustomPainter {
-  _RoadPainter({this.coords});
+/// The dotted 12x6 grid background + "SEVER ↑ · lat, lng" coordinate
+/// caption. Used to draw a hardcoded crossroads (two solid road strips with
+/// dashed center lines) on top of the grid — removed per user feedback:
+/// a real accident scene is drawn freeform on a blank grid, not constrained
+/// to a fixed intersection shape.
+class _GridPainter extends CustomPainter {
+  _GridPainter({this.coords});
 
   final String? coords;
 
@@ -473,21 +630,16 @@ class _RoadPainter extends CustomPainter {
     final gridPaint = Paint()
       ..color = AppColors.borderLight
       ..strokeWidth = 1;
-    for (double x = 0; x < size.width; x += 20) {
-      canvas.drawLine(Offset(x, 0), Offset(x, size.height), gridPaint);
+    final cellWidth = size.width / _kGridColumns;
+    final cellHeight = size.height / _kGridRows;
+    for (var col = 0; col <= _kGridColumns; col++) {
+      final x = col * cellWidth;
+      _drawDashedLine(canvas, Offset(x, 0), Offset(x, size.height), gridPaint, dash: 3, gap: 3);
     }
-    for (double y = 0; y < size.height; y += 20) {
-      canvas.drawLine(Offset(0, y), Offset(size.width, y), gridPaint);
+    for (var row = 0; row <= _kGridRows; row++) {
+      final y = row * cellHeight;
+      _drawDashedLine(canvas, Offset(0, y), Offset(size.width, y), gridPaint, dash: 3, gap: 3);
     }
-
-    final roadPaint = Paint()..color = AppColors.illustrationRoad;
-    final vStrip = Rect.fromLTWH(size.width * 0.36, 0, size.width * 0.28, size.height);
-    final hStrip = Rect.fromLTWH(0, size.height * 0.38, size.width, size.height * 0.24);
-    canvas.drawRect(vStrip, roadPaint);
-    canvas.drawRect(hStrip, roadPaint);
-
-    _drawDashedLine(canvas, Offset(vStrip.center.dx, 0), Offset(vStrip.center.dx, size.height));
-    _drawDashedLine(canvas, Offset(0, hStrip.center.dy), Offset(size.width, hStrip.center.dy));
 
     final textPainter = TextPainter(
       text: TextSpan(
@@ -499,12 +651,9 @@ class _RoadPainter extends CustomPainter {
     textPainter.paint(canvas, Offset(size.width - textPainter.width - 8, size.height - textPainter.height - 6));
   }
 
-  void _drawDashedLine(Canvas canvas, Offset start, Offset end) {
-    final paint = Paint()
-      ..color = Colors.white
-      ..strokeWidth = 3;
+  void _drawDashedLine(Canvas canvas, Offset start, Offset end, Paint paint, {required double dash, required double gap}) {
     final total = (end - start).distance;
-    const dash = 14.0, gap = 14.0;
+    if (total == 0) return;
     var covered = 0.0;
     final direction = (end - start) / total;
     while (covered < total) {
@@ -516,7 +665,7 @@ class _RoadPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant _RoadPainter oldDelegate) => oldDelegate.coords != coords;
+  bool shouldRepaint(covariant _GridPainter oldDelegate) => oldDelegate.coords != coords;
 }
 
 class _StrokesPainter extends CustomPainter {
@@ -538,6 +687,13 @@ class _StrokesPainter extends CustomPainter {
     }
   }
 
+  // Always repaint rather than comparing `strokes` by identity: `_strokes`
+  // is the same List instance mutated in place (.add) on every pointer
+  // move, not reassigned, so an identity/equality check here always saw
+  // "no change" and skipped repainting mid-stroke — strokes only appeared
+  // once some *other* state change (like toggling draw mode off) forced a
+  // full rebuild. This is what caused "drawings only become visible after
+  // switching back to the hand tool."
   @override
-  bool shouldRepaint(covariant _StrokesPainter oldDelegate) => oldDelegate.strokes != strokes;
+  bool shouldRepaint(covariant _StrokesPainter oldDelegate) => true;
 }

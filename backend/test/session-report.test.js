@@ -185,6 +185,53 @@ describe("Session + Report data layer and real-time sync", () => {
       expect(report.partyB.vehicle.plate).toBe("BBB-222");
     });
 
+    // Regression test for a bug found via live testing: the mobile app's
+    // "fill sample data" button fires ~18 report:patch messages back-to-back
+    // with no pacing. Before report-mutex.service.js's per-report
+    // serialization, concurrent patches into different leaves of a
+    // not-yet-existing nested subdocument (partyA.vehicle/partyA.insurer
+    // start out absent) raced: each patch's own fetch→set→save cycle
+    // fetched a snapshot before the others had committed, and Mongoose
+    // marking the whole parent path (not the leaf) dirty for a brand-new
+    // subdocument meant their saves generated conflicting whole-object
+    // $set operations that silently clobbered each other — reproduced
+    // reliably (first try) with a standalone script mimicking this exact
+    // burst against the real dev stack. `partyA.vehicle` ended up missing
+    // entirely and `partyA.insurer` had only its last-patched field.
+    it("keeps every field from a burst of concurrent patches into a not-yet-existing subdocument", async () => {
+      const paths = [
+        "partyA.vehicle.make",
+        "partyA.vehicle.model",
+        "partyA.vehicle.plate",
+        "partyA.vehicle.country",
+        "partyA.vehicle.vin",
+        "partyA.insurer.company",
+        "partyA.insurer.policyNumber",
+        "partyA.insurer.greenCardNumber",
+        "partyA.insurer.agency",
+      ];
+      const received = [];
+      const allPatched = new Promise((resolve) => {
+        socketB.on("report:patched", (event) => {
+          received.push(event.path);
+          if (received.length === paths.length) resolve();
+        });
+      });
+      paths.forEach((path, i) => socketA.emit("report:patch", { path, value: `v${i}` }));
+      await allPatched;
+
+      const report = await Report.findById(reportId);
+      expect(report.partyA.vehicle.make).toBe("v0");
+      expect(report.partyA.vehicle.model).toBe("v1");
+      expect(report.partyA.vehicle.plate).toBe("v2");
+      expect(report.partyA.vehicle.country).toBe("v3");
+      expect(report.partyA.vehicle.vin).toBe("v4");
+      expect(report.partyA.insurer.company).toBe("v5");
+      expect(report.partyA.insurer.policyNumber).toBe("v6");
+      expect(report.partyA.insurer.greenCardNumber).toBe("v7");
+      expect(report.partyA.insurer.agency).toBe("v8");
+    });
+
     it("allows either party to patch a shared subtree (accident.*)", async () => {
       const patchedOnA = waitForEvent(socketA, "report:patched");
       socketB.emit("report:patch", { path: "accident.location.address", value: "Main St 1" });

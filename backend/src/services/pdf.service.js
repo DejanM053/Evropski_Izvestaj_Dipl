@@ -156,7 +156,7 @@ function partyRows(party) {
     ["Broj šasije (VIN)", v.vin],
     ["Osiguravač", ins.company],
     ["Broj polise", ins.policyNumber],
-    ["Broj zel. karte", ins.greenCardNumber],
+    ["Zeleni karton", ins.greenCardNumber],
     ["Polisa važi", fmtDateRange(ins.validFrom, ins.validTo)],
     ["Agencija", ins.agency],
   ];

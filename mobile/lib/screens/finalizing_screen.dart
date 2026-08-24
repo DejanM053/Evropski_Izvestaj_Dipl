@@ -100,7 +100,15 @@ class _FinalizingScreenState extends State<FinalizingScreen> {
         context.read<SessionController>().adoptReport(result.report!);
       }
     } on ApiException catch (e) {
-      if (mounted) setState(() => _requestError = e.message);
+      // A client-side timeout here doesn't mean finalize failed — the
+      // pipeline keeps running server-side regardless of whether this HTTP
+      // request is still open (routes/reports.js awaits the full thing
+      // before responding). This screen's step rows already reflect the
+      // real outcome via report:progress/report:sealed and the report's own
+      // persisted fields, so a raw "request took longer than expected"
+      // banner here would just be a misleading client-side networking
+      // artifact, not an actual failure to report.
+      if (mounted && !e.isTimeout) setState(() => _requestError = e.message);
     } finally {
       if (mounted) setState(() => _requesting = false);
     }

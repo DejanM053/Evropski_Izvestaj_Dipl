@@ -2,15 +2,15 @@
 
 ## Current phase
 
-**Feature-complete.** All 12 phases from master_plan.md §8 are done. Phase
-12 (testnet deploy + README + demo script + acceptance-checklist
-walkthrough) is the last one — see its Decisions entry below for the full
-Sepolia anchor/tamper/verify run and the item-by-item acceptance checklist.
-One item on that checklist (the live two-device end-to-end run) is an
-explicitly documented gap for *this phase specifically* — it was already
-demonstrated for real in Phases 6–11's own live testing sessions, just not
-re-run in Phase 12 per that phase's own instructions (no live demo this
-round). See "Known issues" below.
+**Feature-complete and confirmed end to end by the user.** All 12 phases
+from master_plan.md §8 are done. Phase 12 (testnet deploy + README + demo
+script + acceptance-checklist walkthrough) added the Sepolia deploy and the
+full acceptance-checklist walkthrough — see its Decisions entry below.
+A round of post-Phase-12 fixes (sketch step, a finalize-screen timeout
+banner, and a real data-loss race condition affecting vehicle/insurer
+fields) followed, found via the user's own live testing — see that
+Decisions entry and "Project status" below for the real two-device Sepolia
+run that confirmed all of it end to end through the actual mobile UI.
 
 Phase 11 is done, confirmed both ways: first against the backend alone
 (throwaway report, real Hardhat anchor, `scripts/tamper.js`, re-verify
@@ -1373,12 +1373,185 @@ untouched as a control. See Decisions below for both passes.
     passing (was 58 before this change). `flutter analyze`: clean
     (no mobile files touched).
 
+- **Post-Phase-12 fixes found via live two-device testing**, in one round:
+  the sketch step and a data-loss bug in the socket patch handler.
+  - **Sketch step (`mobile/lib/screens/steps/sketch_step.dart`) had six
+    real bugs**, all found by the user clicking through the actual app:
+    a screen-size-dependent canvas instead of the real report's fixed 2:1
+    diagram-box ratio; a hardcoded crossroads background that doesn't
+    belong on a freeform sketch; freehand strokes invisible until switching
+    back to the hand tool; the rotation handle not working on either
+    device; the sketch silently resetting/overwriting when the second
+    party reached the step; and the canvas losing touch gestures to the
+    page scroll on phones. Fixed together:
+    - **2:1 canvas + 12x6 dotted grid**: fixed logical canvas at
+      `Size(400, 200)`, wrapped in `AspectRatio` + `FittedBox` so it scales
+      to any screen width while staying exactly 2:1 — all existing item/
+      stroke position math is untouched (still in the same fixed 400x200
+      coordinate space Flutter's hit-testing/`RepaintBoundary.toImage`
+      automatically account for through the scaling ancestors). Grid drawn
+      as 13 dashed vertical + 7 dashed horizontal lines (12x6 cells).
+    - **Crossroads removed**: `_RoadPainter` → `_GridPainter`, stripped the
+      hardcoded road strips/dashed center lines, kept grid + coordinate
+      caption. Deleted the now-dead `illustrationRoad` color token.
+    - **Invisible strokes while drawing**: `_StrokesPainter.shouldRepaint`
+      compared the same mutated `List` by identity (`_strokes.add(...)`
+      never reassigns the list) — always `false`, so `CustomPaint` skipped
+      repainting mid-stroke even though `setState` had rebuilt the widget
+      tree with a new painter instance. Fixed by always returning `true`.
+    - **Rotation handle unreachable**: a real Flutter hit-test gotcha, not
+      a device issue — `RenderBox.hitTest`'s `size.contains(position)`
+      check rejects a point before ever trying that box's children, so
+      sizing the item's outer `Positioned` to exactly the icon's 40x40 and
+      only *painting* the handle outside those bounds (via
+      `clipBehavior: Clip.none`) left most of the visible handle outside
+      the hit-testable region. Fixed by enlarging the outer bounding box
+      (`_boundsSize = Size(112, 112)`) to comfortably contain the handle's
+      full swept circle at any rotation angle, with the icon and handle
+      repositioned relative to the new, bigger box's center.
+    - **Sketch reset on the second party's turn** — the real bug behind
+      it: the sketch only ever round-trips as a flattened PNG (no
+      persisted vector/structured state), so `SketchStep.initState()`
+      always started from a blank `_defaultItems()` regardless of what the
+      other party had already drawn; whoever saved second silently
+      overwrote the first party's sketch. Discussed two fixes with the
+      user before implementing — persisting structured canvas state for
+      true live collaborative editing, vs. restricting editing to one
+      party — and went with the simpler one per the user's own suggestion:
+      **only the session creator (party A) gets the interactive canvas**;
+      party B sees a read-only view (the uploaded image once it exists, or
+      a "waiting for Vozač A" placeholder before that, reactively updating
+      off the already-live-synced report with no polling). Deliberately
+      scoped narrower per follow-up discussion: doesn't extend to photos
+      (not part of what Review actually confirms), and shared subtrees
+      (`accident.*`/`sketch` broadcast path) aren't otherwise touched.
+      `review_step.dart`'s sketch preview card updated from `aspectRatio: 1`
+      to `2` to match the shape change.
+    - **Phone: canvas gestures lost to page scroll** — removed the
+      `SingleChildScrollView` that wrapped the canvas; it's now a
+      non-scrolling layout with the canvas in an `Expanded`, so there's no
+      ancestor `Scrollable` for the draw gesture to lose a gesture-arena
+      contest against. This was the root fix, not a workaround — no amount
+      of `HitTestBehavior`/gesture-priority tuning changes that a `Pan`
+      recognizer competing against an ancestor `Scrollable`'s own drag
+      recognizer is inherently fragile; removing the competing ancestor
+      entirely is what actually closes it.
+  - **`FinalizingScreen` briefly showed a raw Dio "request took longer than
+    expected" banner** once the backend was pointed at Sepolia for the
+    user's own testnet check (see the Phase 12 entry above) — `ApiClient`'s
+    shared Dio instance has an 8s default timeout, but `POST /finalize`'s
+    HTTP response doesn't return until the whole pipeline completes
+    server-side (`routes/reports.js` awaits `runFinalize` before
+    responding), including a real chain confirmation that the screen's own
+    hint text already says takes 20-40s on a public testnet — so the
+    client gave up and surfaced Dio's raw timeout message as if finalize
+    had failed, even though the pipeline kept running fine server-side and
+    sealed moments later. Fixed two ways: `ApiClient.finalizeReport` now
+    passes a 90s `receiveTimeout`/`sendTimeout` via per-call `Options`
+    (leaving the 8s default alone for every other, genuinely-short REST
+    call) so this stops happening in the normal case; and `ApiException`
+    gained an `isTimeout` flag (set from `DioExceptionType`) so
+    `FinalizingScreen._start()` can specifically swallow a *timeout*
+    without swallowing a real server-reported failure — a client-side
+    timeout on this one call was never actually a failure signal to begin
+    with, since the screen's step rows already reflect the real outcome
+    via `report:progress`/`report:sealed` and the report's own persisted
+    fields, independent of whether this particular HTTP request is still
+    open.
+  - **Vehicle/insurer fields silently missing from the generated PDF** —
+    the most involved fix of this round, found because the user checked a
+    real generated PDF closely. Confirmed first via direct Mongo inspection
+    of the actual sealed report (not just re-reading the code) that the
+    data was genuinely absent from the database, not merely a PDF-layout
+    bug: `partyA.vehicle` was missing as a key entirely, and
+    `partyA.insurer` had only its very-last-patched field (`validTo`) —
+    identical pattern on both parties' independent reports. Root-caused
+    and *confirmed* with a standalone repro script
+    (`socket.io-client` against the real running dev backend, no jest
+    scaffolding needed for the first pass) that fired the exact same burst
+    `my_details_step.dart`'s `_fillSampleData` sends (~18
+    `report:patch` events back-to-back with zero pacing between them,
+    matching how the "Popuni test podacima" button works) — reproduced the
+    identical missing-field pattern on the very first run, confirming this
+    is a deterministic bug, not network jitter. Mechanism: `session.socket.js`'s
+    `report:patch` handler does an independent `Report.findById` →
+    `.set(path, value)` → `.save()` for every single incoming patch, with
+    no serialization; when several patches for the same report arrive
+    close together, each fetches its own snapshot before any of the others
+    have committed. For a leaf under a *not-yet-existing* nested
+    subdocument (`partyA.vehicle` and `partyA.insurer` both start out
+    absent — Mongoose's default `minimize: true` drops an all-undefined
+    embedded object from what's actually persisted), Mongoose's dirty-path
+    tracking marks the *whole parent path* as modified rather than the
+    individual leaf, so each concurrent patch's `.save()` generates a
+    conflicting whole-object `$set` on the same key — concurrent
+    whole-object `$set`s to the same key don't merge, and whichever
+    commits last silently wins, discarding the others' fields, with no
+    error thrown anywhere (confirmed nothing appeared in the backend
+    logs during the repro). Driver fields survived because they were
+    patched first in the burst and (in this instance) didn't collide with
+    a later group the same way; this was never guaranteed and could just
+    as easily have hit driver fields on a different run — the bug is
+    general to "concurrent patches into any not-yet-existing subdocument
+    leaf," not vehicle/insurer specifically.
+    - **Fix**: a new `backend/src/services/report-mutex.service.js`
+      (`withReportLock(reportId, task)`) — a plain in-memory `Map` of
+      chained promises, one per reportId, that serializes the *whole*
+      fetch→set→save→broadcast sequence per report (different reports
+      still process fully concurrently). Same "single Node process, no
+      clustering per docker-compose §7" trade-off already accepted for
+      `finalize.service.js`'s own per-report guard, just a queue instead
+      of a reject-if-busy lock, since every patch here carries real data
+      that must be *applied*, not dropped. Wired into `session.socket.js`'s
+      `report:patch` handler around the report fetch through the
+      `report:patched` broadcast and the `maybeLockReport`/`partySignedOff`
+      checks added in the earlier post-Phase-12 hardening entry — those are
+      now implicitly race-safe too, as a side effect of the same fix.
+    - **Verified the fix closes it**: re-ran the exact same standalone
+      repro script against the rebuilt backend — every field now present
+      and correct. Added a proper regression test in
+      `backend/test/session-report.test.js` ("keeps every field from a
+      burst of concurrent patches into a not-yet-existing subdocument")
+      and *confirmed the test itself is meaningful*, not a false-positive:
+      temporarily bypassed `withReportLock` (`return task()` short-circuit)
+      and watched the new test fail with the exact same missing-field
+      shape, then restored the real fix and confirmed the full suite
+      (63/63) passes again.
+  - **Renamed "Broj zel. karte" → "Zeleni karton"** (green card number
+    field label) in both `pdf.service.js` and `my_details_step.dart`, per
+    user request — matches the PDF's existing compact-label convention
+    (e.g. "Osiguravač", not "Naziv osiguravača") rather than a longer
+    grammatically-inflected form that risked overflowing the PDF's fixed
+    82px label column at this font size.
+  - Rebuilt and recreated the `backend` container for each of the above
+    (`docker compose build backend` + `up -d --no-deps backend`, same
+    non-`--build` care as every prior phase) before re-verifying; cleaned
+    up every throwaway Mongo document created by the two repro scripts
+    afterward. `npm test`: 63/63. `flutter analyze`: clean. `flutter test`:
+    passing.
+
+## Project status
+
+**Feature-complete, and confirmed end to end by the user.** After the
+post-Phase-12 sketch/finalize/PDF fixes above, the user drove a full
+two-device session (phone + Chrome) through the real mobile UI — pairing,
+form, sketch, photos, review, both signatures — against the Sepolia-
+configured backend, and it sealed for real: report `6a8c7f8d85819414af65e6bd`,
+tx `0x11aed0a798822d6125a9d91a0894c03a643e8db67c4716850086c168c5ea21d0`,
+viewable at
+`https://sepolia.etherscan.io/tx/0x11aed0a798822d6125a9d91a0894c03a643e8db67c4716850086c168c5ea21d0`.
+This is a strictly stronger confirmation than Phase 12's own Sepolia
+verification (which only exercised the backend via scripts, not the live
+UI) — it closes the one item Phase 12's acceptance checklist had filed as
+a gap: the live two-device run had been demonstrated locally in Phases
+6-11 and via script against Sepolia in Phase 12, but never through the
+real UI against the public testnet until now.
+
 ## Known issues
 
-- **The live two-device run was not re-executed in Phase 12.** It's the
-  one acceptance-checklist item this phase didn't (and per its own
-  instructions, wasn't meant to) re-verify — see the checklist item above
-  for the specific earlier-phase sessions that already demonstrated it for
-  real. If a committee wants a *fresh* run immediately before the defense,
-  it should be rehearsed once more close to demo day regardless, per
-  master_plan.md §9's "rehearse this."
+- **No outstanding known issues.** The two-device run above closes the one
+  gap left open after Phase 12 (see "Project status"). If a committee wants
+  a *fresh* run immediately before the defense, it's still worth
+  rehearsing once more close to demo day regardless, per master_plan.md
+  §9's "rehearse this" — routine practice, not because anything is known
+  to be broken.

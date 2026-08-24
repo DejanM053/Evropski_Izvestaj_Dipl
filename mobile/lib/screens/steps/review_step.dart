@@ -248,7 +248,7 @@ class _SketchReviewCard extends StatelessWidget {
           Text('Skica nije dodata.', style: AppTypography.bodySmall.copyWith(color: AppColors.textMuted))
         else
           AspectRatio(
-            aspectRatio: 1,
+            aspectRatio: 2,
             child: Container(
               decoration: BoxDecoration(border: Border.all(color: AppColors.border), color: AppColors.surfaceMuted),
               child: Image.network(
