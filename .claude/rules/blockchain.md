@@ -1,5 +1,0 @@
----
-paths: ["blockchain/**"]
----
-
-# Blockchain rules
