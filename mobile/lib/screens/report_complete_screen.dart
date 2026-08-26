@@ -102,12 +102,6 @@ class _ReportCompleteScreenState extends State<ReportCompleteScreen> {
     Navigator.of(context).popUntil((route) => route.isFirst);
   }
 
-  void _notImplemented() {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Slanje osiguravaču nije deo ovog projekta.')),
-    );
-  }
-
   void _openVerify(String reportId) {
     Navigator.of(context).push(
       MaterialPageRoute(builder: (_) => VerifyScreen(reportId: reportId)),
@@ -366,8 +360,6 @@ class _ReportCompleteScreenState extends State<ReportCompleteScreen> {
                       child: Column(
                         children: [
                           _ActionRow(label: 'Proveri integritet', onTap: () => _openVerify(report.id)),
-                          const Divider(height: 1, color: AppColors.border),
-                          _ActionRow(label: 'Pošalji osiguravaču', onTap: _notImplemented),
                           const Divider(height: 1, color: AppColors.border),
                           _ActionRow(label: 'Nazad na početni ekran', onTap: _goHome),
                         ],
